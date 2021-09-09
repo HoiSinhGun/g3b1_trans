@@ -17,7 +17,7 @@ class Test(TestCase):
         super().setUp()
         utilities.logger.setLevel(logging.DEBUG)
         logging.getLogger().setLevel(logging.DEBUG)
-        self.dispatcher: Dispatcher = test_utils.setup(tg_hdl.__file__, trans.COLUMNS_TRANS)
+        self.dispatcher: Dispatcher = test_utils.setup(tg_hdl.__file__)
 
     def test_cmd_cmd_default(self):
         ts: test_utils.TestSuite = test_utils.TestSuite(
@@ -37,24 +37,25 @@ class Test(TestCase):
         )
 
         callback = MsgCallback()
-        tstca_hdl_10 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_ed), {})
+        tstca_hdl_10 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_tplate_02), {})
         ts.tc_exec(tstca_hdl_10, callback)
 
         tst_bkey = utilities.now_for_sql()
-        tstca_hdl_20 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_new),
+        tstca_hdl_20 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_tplate_01),
                                               {'bkey': tst_bkey,
                                                'tst_type': TST_TY_BLANKS['bkey']})
         ts.tc_exec(tstca_hdl_20, callback)
 
-        tstca_hdl_30 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_qt),
+        tstca_hdl_30 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_tplate_qt),
                                               {'qt_str': 'Alle meine Entchen ... auf dem See'})
         ts.tc_exec(tstca_hdl_30, callback)
 
-        tstca_hdl_40 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_ans),
+        tstca_hdl_40 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_tplate_ans),
                                               {})
         ts.tc_exec(tstca_hdl_40, callback)
 
-        tstca_hdl_50 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_ans),
+        # noinspection SpellCheckingInspection
+        tstca_hdl_50 = test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_tplate_ans),
                                               {'ans_str': 'schwimmen'})
         ts.tc_exec(tstca_hdl_50, callback)
 
@@ -62,11 +63,12 @@ class Test(TestCase):
                                           {'bkey': tst_bkey}),
                    callback)
 
-        ts.tc_exec(test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_qt),
+        ts.tc_exec(test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_tplate_qt),
                                           {}),
                    callback)
 
-        ts.tc_exec(test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_ans),
+        # noinspection SpellCheckingInspection
+        ts.tc_exec(test_utils.TestCaseHdl(utilities.g3_cmd_by_func(tg_hdl.cmd_tst_tplate_ans),
                                           {'ans_str': 'schwimmen'}),
                    callback)
 

@@ -1,22 +1,27 @@
 import logging
 from collections import namedtuple
 from dataclasses import asdict
+from typing import Any
 
-from sqlalchemy import Table, select, desc, update, delete, and_, or_, asc
+from sqlalchemy import Table, select, desc, update, delete, and_, or_, asc, text
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import LegacyCursorResult, Result, Row
 from sqlalchemy.engine.mock import MockConnection
-from sqlalchemy.sql import Select
+from sqlalchemy.sql import Select, ColumnCollection
 
 import g3b1_data.db
+import integrity
 import trans.data
+from entities import ENT_TY_txtlc, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, \
+    ENT_TY_tst_tplate_it_ans
+from trans.data.sqlalchemy import pop_only_dc_fields, replace_lcs
 from g3b1_data import settings
-from g3b1_data.elements import ELE_TYP_chat_id
+from g3b1_data.elements import ELE_TY_chat_id, ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id
 from g3b1_data.model import G3Result
 from g3b1_log.g3b1_log import cfg_logger
 from trans.data import model, MetaData_TRANS, Engine_TRANS, sqlalchemy
-from trans.data.model import TxtLC, TxtLCMapping, TxtLCOnym, TxtSeq, TxtSeqItem, TstTemplate, TstTemplateIt, \
-    TstTemplateItAns
+from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TxtSeqIt, TstTplate, TstTplateIt, \
+    TstTplateItAns, Lc, TransSqlDictFactory
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
@@ -47,17 +52,17 @@ def read_setting_w_fback(setng_dct: dict[str, ...]) -> G3Result:
                 'user_id' not in setng_dct.keys():
             return g3r
         setng_dct_ = setng_dct
-        setng_dct_.pop(ELE_TYP_chat_id['id'])
+        setng_dct_.pop(ELE_TY_chat_id.id_)
         g3r = settings.read_setting(con, trans.data.MetaData_TRANS, setng_dct_)
         return g3r
 
 
-def ins_txtlc(txtlc: TxtLC) -> G3Result:
+def ins_txtlc(txtlc: Txtlc) -> G3Result:
     con: MockConnection
     with Engine_TRANS.connect() as con:
         tbl: Table = MetaData_TRANS.tables['txtlc']
         insert_stmnt: insert = insert(tbl).values(
-            txt=txtlc.txt, lc=txtlc.lc
+            txt=txtlc.txt, lc=txtlc.lc.value
         )
         rs = con.execute(insert_stmnt)
         if rs.rowcount != 1:
@@ -66,8 +71,8 @@ def ins_txtlc(txtlc: TxtLC) -> G3Result:
     return G3Result(0, txtlc)
 
 
-def fiby_txt_lc(txtlc: TxtLC, con: MockConnection = None) -> G3Result[TxtLC]:
-    def wrapped(con_: MockConnection, txtlc_: TxtLC, logger_: logging.Logger) -> G3Result:
+def fiby_txt_lc(txtlc: Txtlc, con: MockConnection = None) -> G3Result[Txtlc]:
+    def wrapped(con_: MockConnection, txtlc_: Txtlc, logger_: logging.Logger) -> G3Result:
         tbl: Table = MetaData_TRANS.tables['txtlc']
         cols = tbl.columns
         sql_stmnt: Select = select(tbl)
@@ -77,17 +82,17 @@ def fiby_txt_lc(txtlc: TxtLC, con: MockConnection = None) -> G3Result[TxtLC]:
             )
         else:
             sql_stmnt = sql_stmnt.where(
-                cols.txt == txtlc_.txt, cols.lc == txtlc_.lc
+                cols.txt == txtlc_.txt, cols.lc == txtlc_.lc.value
             )
         logger.debug(sql_stmnt)
-        rs: LegacyCursorResult = con_.execute(sql_stmnt)
+        rs: Result = con_.execute(sql_stmnt)
         res_li: list = rs.fetchall()
         if not res_li or len(res_li) < 1:
             return G3Result(4)
         if len(res_li) > 1:
             logger_.error(f'more than one entry found for {txtlc_}')
-        first: tuple = res_li[0]
-        txtlc_ = TxtLC(first[1], first[2], first[0])
+        first: Row = res_li[0]
+        txtlc_ = sqlalchemy.from_row_any(ENT_TY_txtlc, first)
         return G3Result(0, txtlc_)
 
     if con:
@@ -96,7 +101,7 @@ def fiby_txt_lc(txtlc: TxtLC, con: MockConnection = None) -> G3Result[TxtLC]:
         return wrapped(con, txtlc, logger)
 
 
-def ins_onym(txt_onym: TxtLCOnym) -> G3Result:
+def ins_onym(txt_onym: TxtlcOnym) -> G3Result:
     """	'id'	INTEGER NOT NULL,
         'lc'	text NOT NULL,
         'src__txtlc_id'	INTEGER NOT NULL,
@@ -108,7 +113,7 @@ def ins_onym(txt_onym: TxtLCOnym) -> G3Result:
     with Engine_TRANS.connect() as con:
         tbl: Table = MetaData_TRANS.tables['txtlc_onym']
         insert_stmnt: insert = insert(tbl).values(
-            lc=txt_onym.txtlc_src.lc,
+            lc=txt_onym.txtlc_src.lc.value,
             src__txtlc_id=txt_onym.txtlc_src.id_,
             trg__txtlc_id=txt_onym.txtlc_trg.id_,
             onym_ty=txt_onym.onym_ty,
@@ -130,14 +135,16 @@ def del_onym(id_: int) -> G3Result:
     return G3Result(0)
 
 
-def li_onym_by_txtlc(txtlc: TxtLC, src_and_trg: bool = True) -> \
-        G3Result[tuple[list[TxtLCOnym]]]:
-    def convert_results(g3_res: list[namedtuple]) -> list[TxtLCOnym]:
-        res_li: list[TxtLCOnym] = []
+def li_onym_by_txtlc(txtlc: Txtlc, src_and_trg: bool = True) -> \
+        G3Result[tuple[list[TxtlcOnym]]]:
+    def convert_results(g3_res: list[namedtuple]) -> list[TxtlcOnym]:
+        res_li: list[TxtlcOnym] = []
         for i in g3_res:
-            txtlc_src = fiby_txt_lc(TxtLC('', '', i['src__txtlc_id'])).result
-            txtlc_trg = fiby_txt_lc(TxtLC('', '', i['trg__txtlc_id'])).result
-            txt_lc_onym = TxtLCOnym(txtlc_src, txtlc_trg, i['creator'], i['onym_ty'], i['id'])
+            # noinspection PyTypeChecker
+            txtlc_src = fiby_txt_lc(Txtlc('', None, i['src__txtlc_id'])).result
+            # noinspection PyTypeChecker
+            txtlc_trg = fiby_txt_lc(Txtlc('', None, i['trg__txtlc_id'])).result
+            txt_lc_onym = TxtlcOnym(txtlc_src, txtlc_trg, i['creator'], i['onym_ty'], i['id'])
             res_li.append(txt_lc_onym)
         return res_li
 
@@ -145,8 +152,8 @@ def li_onym_by_txtlc(txtlc: TxtLC, src_and_trg: bool = True) -> \
         txt_lc = fiby_txt_lc(txtlc, con).result
         g3_res_syn = li_onym_by_txtlc_ty(txt_lc, 'syn', src_and_trg, con)
         g3_res_ant = li_onym_by_txtlc_ty(txt_lc, 'ant', src_and_trg, con)
-        syn_li: list[TxtLCOnym] = []
-        ant_li: list[TxtLCOnym] = []
+        syn_li: list[TxtlcOnym] = []
+        ant_li: list[TxtlcOnym] = []
         if g3_res_syn.retco == 0:
             syn_li.extend(convert_results(g3_res_syn.result))
         if g3_res_ant.retco == 0:
@@ -154,7 +161,7 @@ def li_onym_by_txtlc(txtlc: TxtLC, src_and_trg: bool = True) -> \
         return G3Result(0, (syn_li, ant_li))
 
 
-def li_onym_by_txtlc_ty(txtlc: TxtLC, onym_ty: str = 'syn', src_and_trg: bool = True,
+def li_onym_by_txtlc_ty(txtlc: Txtlc, onym_ty: str = 'syn', src_and_trg: bool = True,
                         con: MockConnection = None) -> G3Result[list[namedtuple]]:
     """	'id'	INTEGER NOT NULL,
             'lc'	text NOT NULL,
@@ -173,7 +180,7 @@ def li_onym_by_txtlc_ty(txtlc: TxtLC, onym_ty: str = 'syn', src_and_trg: bool = 
             where_clause = or_(where_clause, cols.trg__txtlc_id == txtlc.id_)
 
         sql_stmnt = sql_stmnt.where(
-            and_(where_clause, cols.onym_ty == onym_ty, cols.lc == txtlc.lc)
+            and_(where_clause, cols.onym_ty == onym_ty, cols.lc == txtlc.lc.value)
         )
         logger.debug(sql_stmnt)
         rs: LegacyCursorResult = con_.execute(sql_stmnt)
@@ -188,40 +195,41 @@ def li_onym_by_txtlc_ty(txtlc: TxtLC, onym_ty: str = 'syn', src_and_trg: bool = 
         return wrapped(con)
 
 
-def fi_txt_mapping(txtlc: TxtLC, lc_2: str, translator=None) -> G3Result:
+def fi_txt_mapping(txtlc: Txtlc, lc2: Lc, translator=None) -> G3Result[TxtlcMp]:
     con: MockConnection
     with Engine_TRANS.connect() as con:
-        tbl: Table = MetaData_TRANS.tables['txtlc_lc2']
+        tbl: Table = MetaData_TRANS.tables['txtlc_mp']
         cols = tbl.columns
         sql_stmnt: Select = select(tbl)
         if translator:
             sql_stmnt = sql_stmnt.where(
-                cols.src__txtlc_id == txtlc.id_, cols.lc_2 == lc_2, cols.translator == translator
+                cols.src__txtlc_id == txtlc.id_, cols.lc2 == lc2.value, cols.translator == translator
             )
         else:
             sql_stmnt = sql_stmnt.where(
-                cols.src__txtlc_id == txtlc.id_, cols.lc_2 == lc_2
+                cols.src__txtlc_id == txtlc.id_, cols.lc2 == lc2.value
             ).order_by(desc(cols.score))
         rs: Result = con.execute(sql_stmnt)
         result = rs.first()
         if not result:
             return G3Result(4)
-        txtlc_trg = fiby_txt_lc(TxtLC('', '', result['trg__txtlc_id'])).result
-        return G3Result(0, TxtLCMapping(
+        # noinspection PyTypeChecker
+        txtlc_trg = fiby_txt_lc(Txtlc('', None, result['trg__txtlc_id'])).result
+        return G3Result(0, TxtlcMp(
             txtlc_src=txtlc, txtlc_trg=txtlc_trg,
-            lc_2=lc_2, translator=result[2],
+            lc2=lc2.value, translator=result[2],
             score=result['score'])
                         )
 
 
-def upd_txt_mapping(txt_mapping: TxtLCMapping) -> G3Result:
+def upd_txt_mapping(txt_mapping: TxtlcMp) -> G3Result:
     con: MockConnection
     with Engine_TRANS.connect() as con:
-        tbl: Table = MetaData_TRANS.tables['txtlc_lc2']
+        tbl: Table = MetaData_TRANS.tables['txtlc_mp']
         c = tbl.columns
         stmnt = (update(tbl).
                  where(c['src__txtlc_id'] == txt_mapping.txtlc_src.id_,
-                       c['lc_2'] == txt_mapping.lc_2,
+                       c['lc2'] == txt_mapping.lc2.value,
                        c['translator'] == txt_mapping.translator).
                  values(dict(trg__txtlc_id=txt_mapping.txtlc_trg.id_,
                              score=txt_mapping.score))
@@ -232,21 +240,21 @@ def upd_txt_mapping(txt_mapping: TxtLCMapping) -> G3Result:
     return G3Result(0, txt_mapping)
 
 
-def ins_upd_txt_mapping(txt_mapping: TxtLCMapping) -> G3Result:
+def iup_txt_mapping(txt_mapping: TxtlcMp) -> G3Result:
     con: MockConnection
     with Engine_TRANS.connect() as con:
         values = dict(
             src__txtlc_id=txt_mapping.txtlc_src.id_,
-            lc_2=txt_mapping.lc_2.upper(),
+            lc2=txt_mapping.lc2.value,
             translator=txt_mapping.translator,
             trg__txtlc_id=txt_mapping.txtlc_trg.id_,
             score=txt_mapping.score
         )
-        tbl: Table = MetaData_TRANS.tables['txtlc_lc2']
+        tbl: Table = MetaData_TRANS.tables['txtlc_mp']
         insert_stmnt: insert = insert(tbl).values(
             values
         ).on_conflict_do_update(
-            index_elements=['src__txtlc_id', 'lc_2', 'translator'],
+            index_elements=['src__txtlc_id', 'lc2', 'translator'],
             set_=values
         )
         rs = con.execute(insert_stmnt)
@@ -256,7 +264,56 @@ def ins_upd_txt_mapping(txt_mapping: TxtLCMapping) -> G3Result:
         return G3Result(0, txt_mapping)
 
 
-def find_seq(txt_seq: TxtSeq) -> TxtSeq:
+def txtlc_txt_cp(txt: str, lc: Lc, limit: int = 10) -> list[Txtlc]:
+    txtlc_li: list[Txtlc] = []
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl: Table = MetaData_TRANS.tables['txtlc']
+        # noinspection PyTypeChecker
+        c: ColumnCollection = tbl.columns
+        sql_stmnt: Select = select(tbl, text('length(txt) AS len_txt'))
+        sql_stmnt = sql_stmnt.where(
+            (c.txt.like(f'%{txt}%')) & (c.lc == lc.value)
+            & text('length(txt) < 100')
+        ).order_by(asc(text('len_txt'))).limit(limit)
+        rs: Result = con.execute(sql_stmnt)
+        logger.debug(sql_stmnt)
+        result = rs.fetchall()
+        if result:
+            for row in result:
+                txtlc = sqlalchemy.from_row_any(ENT_TY_txtlc, row)
+                txtlc_li.append(txtlc)
+        return txtlc_li
+
+
+def sel_txt_seq(txt_seq_id: int) -> G3Result[TxtSeq]:
+    txt_seq: TxtSeq
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl: Table = MetaData_TRANS.tables[ENT_TY_txt_seq.tbl_name]
+        tbl_it: Table = MetaData_TRANS.tables[ENT_TY_txt_seq_it.tbl_name]
+        stmnt = select(tbl).where(tbl.columns['id'] == txt_seq_id)
+        rs = con.execute(stmnt)
+        row = rs.first()
+        if not row:
+            return G3Result(4)
+        repl_dct = sqlalchemy.orm(con, tbl, row)
+        txt_seq: TxtSeq = sqlalchemy.from_row_txt_seq(row, repl_dct)
+        # now the items
+        stmt = select(tbl_it).where(tbl_it.columns['txt_seq_id'] == txt_seq_id). \
+            order_by(asc(tbl_it.columns['itnum']))
+        rs = con.execute(stmt)
+        rows = rs.fetchall()
+        for it_row in rows:
+            repl_dct: dict[str, Any] = {'txt_seq_id': txt_seq}
+            repl_dct = sqlalchemy.orm(con, tbl_it, it_row, repl_dct)
+            txt_seq_it: TxtSeqIt = sqlalchemy.from_row_txt_seq_it(it_row, repl_dct)
+            txt_seq.it_li.append(txt_seq_it)
+    return G3Result(0, txt_seq)
+
+
+def sel_txt_seq_by_uq(txt_seq: TxtSeq) -> TxtSeq:
+    """By unique txtlc / sec_str"""
     con: MockConnection
     with Engine_TRANS.connect() as con:
         tbl: Table = MetaData_TRANS.tables['txt_seq']
@@ -276,12 +333,12 @@ def find_seq(txt_seq: TxtSeq) -> TxtSeq:
 def ins_seq(txt_seq: TxtSeq) -> G3Result[TxtSeq]:
     con: MockConnection
     with Engine_TRANS.connect() as con:
-        tbl: Table = MetaData_TRANS.tables['txt_seq']
-        tbl_i: Table = MetaData_TRANS.tables['txt_seq_item']
+        tbl: Table = MetaData_TRANS.tables[ENT_TY_txt_seq.tbl_name]
+        tbl_i: Table = MetaData_TRANS.tables[ENT_TY_txt_seq_it.tbl_name]
 
         values = dict(
             src__txtlc_id=txt_seq.txtlc_src.id_,
-            lc=txt_seq.lc.upper(),
+            lc=txt_seq.lc.value,
             seq_str=txt_seq.seq_str
         )
         insert_stmnt: insert = insert(tbl).values(
@@ -296,7 +353,7 @@ def ins_seq(txt_seq: TxtSeq) -> G3Result[TxtSeq]:
             rs = con.execute(f"SELECT ROWID, * FROM {tbl.name} WHERE ROWID=:rowid", rowid=rowid)
             txt_seq_id = int(rs.first()['id'])
         txt_seq.id_ = txt_seq_id
-        for i in txt_seq.item_li:
+        for i in txt_seq.it_li:
             values = dict(
                 txt_seq_id=txt_seq.id_,
                 trg__txtlc_id=i.txtlc_trg.id_,
@@ -305,98 +362,87 @@ def ins_seq(txt_seq: TxtSeq) -> G3Result[TxtSeq]:
             insert_stmnt: insert = insert(tbl_i).values(
                 values
             )
+            # noinspection PyUnusedLocal
             rs = con.execute(insert_stmnt)
         return G3Result(0, txt_seq)
 
 
-def get_txt_seq(txt_seq_id: int) -> G3Result[TxtSeq]:
-    txt_seq: TxtSeq
+def sel_tst_tplate(tst_tplate_id: int) -> G3Result[TstTplate]:
+    tst_tplate: TstTplate
     con: MockConnection
     with Engine_TRANS.connect() as con:
-        tbl: Table = MetaData_TRANS.tables['txt_seq']
-        tbl_i: Table = MetaData_TRANS.tables['txt_seq_item']
-        stmnt = select(tbl).where(tbl.columns['id'] == txt_seq_id)
-        rs = con.execute(stmnt)
-        row = rs.first()
-        if not row:
-            return G3Result(4)
-        txtlc_src = fiby_txt_lc(TxtLC('', '', row['src__txtlc_id']), con).result
-        txt_seq = TxtSeq(txtlc_src)
-        txt_seq.id_ = row['id']
-        txt_seq.lc = row['lc']
-        txt_seq.seq_str = row['seq_str']
-        txt_seq.item_li = []
-        stmt = select(tbl_i).where(tbl_i.columns['txt_seq_id'] == txt_seq_id). \
-            order_by(asc(tbl_i.columns['itnum']))
-        rs = con.execute(stmt)
-        rows = rs.fetchall()
-        for row in rows:
-            txtlc_trg = fiby_txt_lc(TxtLC('', '', row['trg__txtlc_id']), con).result
-            txt_seq.item_li.append(TxtSeqItem(txtlc_trg, row['itnum']))
-    return G3Result(0, txt_seq)
-
-
-def sel_tst_tplate_by_bk(bkey: str) -> G3Result[TstTemplate]:
-    tst_tplate: TstTemplate
-    con: MockConnection
-    with Engine_TRANS.connect() as con:
-        tbl: Table = MetaData_TRANS.tables['tst_template']
-        stmnt = select(tbl).where(tbl.columns['bkey'] == bkey)
-        rs = con.execute(stmnt)
-        row: Row = rs.first()
-        if not row:
-            return G3Result(4)
-        tst_tplate = sqlalchemy.tst_template_from_row(row)
-        return sel_tst_tplate_by_id(tst_tplate.id_)
-
-
-def sel_tst_tplate_by_item_id(item_id: int) -> G3Result[TstTemplate]:
-    con: MockConnection
-    with Engine_TRANS.connect() as con:
-        tbl_i: Table = MetaData_TRANS.tables['tst_template_it']
-        stmnt = select(tbl_i.columns.tst_template_id).where(tbl_i.columns['id'] == item_id)
-        rs: LegacyCursorResult = con.execute(stmnt)
-        tst_tplate_id = int(rs.first()[0])
-        g3r = sel_tst_tplate_by_id(tst_tplate_id)
-        if g3r.retco == 0:
-            return g3r
-        else:
-            return G3Result(4)
-
-
-def sel_tst_tplate_by_id(tst_tplate_id: int) -> G3Result[TstTemplate]:
-    tst_tplate: TstTemplate
-    con: MockConnection
-    with Engine_TRANS.connect() as con:
-        tbl: Table = MetaData_TRANS.tables['tst_template']
+        tbl: Table = MetaData_TRANS.tables['tst_tplate']
         stmnt = select(tbl).where(tbl.columns['id'] == int(tst_tplate_id))
         rs = con.execute(stmnt)
         logger.debug(stmnt)
         row = rs.first()
         if not row:
             return G3Result(4)
-        tst_tplate = sqlalchemy.tst_template_from_row(row)
-        tbl_it: Table = MetaData_TRANS.tables['tst_template_it']
-        stmnt = select(tbl_it).where(tbl_it.columns['tst_template_id'] == tst_tplate_id).\
+        tst_tplate = sqlalchemy.tst_tplate_from_row(row)
+        tbl_it: Table = MetaData_TRANS.tables['tst_tplate_it']
+        stmnt = select(tbl_it).where(tbl_it.columns['tst_tplate_id'] == tst_tplate_id).\
             order_by(asc(tbl_it.columns['itnum']))
         rs = con.execute(stmnt)
         rows = rs.fetchall()
-        for row in rows:
-            quest_txtlc = fiby_txt_lc(TxtLC('', '', row['quest__txtlc_id'])).result
-            answer_txtlc = fiby_txt_lc(TxtLC('', '', row['answer__txtlc_id'])).result
-            item = TstTemplateIt(tst_tplate, quest_txtlc, row['itnum'], answer_txtlc, row['id'])
-            tst_tplate.item_li.append(item)
+        for it_row in rows:
+            repl_dct: dict[str, Any] = {'tst_tplate_id': tst_tplate}
+            repl_dct = sqlalchemy.orm(con, tbl_it, it_row, repl_dct)
+            tst_tplate_it: TstTplateIt = sqlalchemy.tst_tplate_it_from_row(it_row, repl_dct)
+            tst_tplate.it_li.append(tst_tplate_it)
+            # Now the answers
+            tbl_it_ans: Table = MetaData_TRANS.tables['tst_tplate_it_ans']
+            stmnt = select(tbl_it_ans).where(tbl_it_ans.columns['tst_tplate_it_id'] == tst_tplate_it.id_). \
+                order_by(asc(tbl_it_ans.columns['ans_num']))
+            rs = con.execute(stmnt)
+            rows = rs.fetchall()
+            for it_ans_row in rows:
+                repl_dct: dict[str, Any] = {'tst_tplate_it_id': tst_tplate_it}
+                repl_dct = sqlalchemy.orm(con, tbl_it_ans, it_ans_row, repl_dct)
+                tst_tplate_it_ans: TstTplateItAns = \
+                    sqlalchemy.tst_tplate_it_ans_from_row(it_ans_row, repl_dct)
+                tst_tplate_it.ans_li.append(tst_tplate_it_ans)
         return G3Result(0, tst_tplate)
 
 
-def ins_tst_tplate_item(tst_tplate: TstTemplate, i: TstTemplateIt) -> \
-        G3Result[tuple[TstTemplate, TstTemplateIt]]:
+def sel_tst_tplate__bk(bkey: str) -> G3Result[TstTplate]:
+    tst_tplate: TstTplate
     con: MockConnection
     with Engine_TRANS.connect() as con:
-        tbl_i: Table = MetaData_TRANS.tables['tst_template_it']
+        tbl: Table = MetaData_TRANS.tables['tst_tplate']
+        stmnt = select(tbl).where(tbl.columns['bkey'] == bkey)
+        rs = con.execute(stmnt)
+        row: Row = rs.first()
+        if not row:
+            return G3Result(4)
+        tst_tplate = sqlalchemy.tst_tplate_from_row(row)
+        return sel_tst_tplate(tst_tplate.id_)
+
+
+def sel_tst_tplate_by_item_id(item_id: int) -> G3Result[TstTplate]:
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl_i: Table = MetaData_TRANS.tables['tst_tplate_it']
+        stmnt = select(tbl_i.columns.tst_tplate_id).where(tbl_i.columns['id'] == item_id)
+        rs: LegacyCursorResult = con.execute(stmnt)
+        tst_tplate_id = int(rs.first()[0])
+        g3r = sel_tst_tplate(tst_tplate_id)
+        if g3r.retco == 0:
+            return g3r
+        else:
+            return G3Result(4)
+
+
+def ins_tst_tplate_item(tst_tplate: TstTplate, i: TstTplateIt) -> \
+        G3Result[tuple[TstTplate, TstTplateIt]]:
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl_i: Table = MetaData_TRANS.tables['tst_tplate_it']
+        txt_seq_id = i.txt_seq.id_ if i.txt_seq else None
+        txtlc_id = i.txtlc_qt.id_ if i.txtlc_qt else None
         values = dict(
-            tst_template_id=tst_tplate.id_,
-            quest__txtlc_id=i.txtlc_qt.id_,
+            tst_tplate_id=tst_tplate.id_,
+            txt_seq_id=txt_seq_id,
+            quest__txtlc_id=txtlc_id,
             itnum=i.itnum
         )
         insert_stmnt: insert = insert(tbl_i).values(
@@ -410,12 +456,13 @@ def ins_tst_tplate_item(tst_tplate: TstTemplate, i: TstTemplateIt) -> \
         return G3Result(0, (tst_tplate, i))
 
 
-def ins_tst_tplate(tst_template: TstTemplate) -> G3Result[TstTemplate]:
+def ins_tst_tplate(tst_template: TstTplate) -> G3Result[TstTplate]:
     con: MockConnection
     with Engine_TRANS.connect() as con:
-        tbl: Table = MetaData_TRANS.tables['tst_template']
-        tbl_i: Table = MetaData_TRANS.tables['tst_template_it']
-        values = asdict(tst_template)
+        tbl: Table = MetaData_TRANS.tables['tst_tplate']
+        tbl_i: Table = MetaData_TRANS.tables['tst_tplate_it']
+        val_dct = asdict(tst_template)
+        values = replace_lcs(pop_only_dc_fields(val_dct, tbl))
         insert_stmnt: insert = insert(tbl).values(
             values
         )
@@ -423,15 +470,18 @@ def ins_tst_tplate(tst_template: TstTemplate) -> G3Result[TstTemplate]:
         if rs.rowcount != 1:
             return G3Result(4)
         rowid = rs.lastrowid
-        tst_template_id = 0
+        tst_tplate_id = 0
         if rowid:
             rs = con.execute(f"SELECT ROWID, * FROM {tbl.name} WHERE ROWID=:rowid", rowid=rowid)
-            tst_template_id = int(rs.first()['id'])
-        tst_template.id_ = tst_template_id
-        for i in tst_template.item_li:
+            tst_tplate_id = int(rs.first()['id'])
+        tst_template.id_ = tst_tplate_id
+        for i in tst_template.it_li:
+            txt_seq_id = i.txt_seq.id_ if i.txt_seq else None
+            txtlc_id = i.txtlc_qt.id_ if i.txtlc_qt else None
             values = dict(
-                tst_template_id=tst_template.id_,
-                quest__txtlc_id=i.txtlc_qt.id_,
+                tst_tplate_id=tst_template.id_,
+                txt_seq_id=txt_seq_id,
+                quest__txtlc_id=txtlc_id,
                 itnum=i.itnum
             )
             insert_stmnt: insert = insert(tbl_i).values(
@@ -441,20 +491,23 @@ def ins_tst_tplate(tst_template: TstTemplate) -> G3Result[TstTemplate]:
         return G3Result(0, tst_template)
 
 
-def iup_tst_tplate_item_ans(it: TstTemplateIt, ans: TstTemplateItAns) -> \
-        G3Result[tuple[TstTemplateIt, TstTemplateItAns]]:
+def iup_tst_tplate_it_ans(it: TstTplateIt, ans: TstTplateItAns) -> \
+        G3Result[tuple[TstTplateIt, TstTplateItAns]]:
     con: MockConnection
     with Engine_TRANS.connect() as con:
-        tbl_a: Table = MetaData_TRANS.tables['tst_template_it_ans']
+        tbl_a: Table = MetaData_TRANS.tables['tst_tplate_it_ans']
+        seq_it_id: int = ans.txt_seq_it.id_ if ans.txt_seq_it else None
+        txtlc_id: int = ans.txtlc.id_ if ans.txtlc else None
         values = dict(
-            tst_template_it_id=it.id_,
-            txtlc_id=ans.txtlc.id_,
+            tst_tplate_it_id=it.id_,
+            txt_seq_it_id=seq_it_id,
+            txtlc_id=txtlc_id,
             ans_num=ans.ans_num
         )
         insert_stmnt: insert = insert(tbl_a).values(
             values
         ).on_conflict_do_update(
-            index_elements=['tst_template_it_id', 'ans_num'],
+            index_elements=['tst_tplate_it_id', 'ans_num'],
             set_=values
         )
         rs = con.execute(insert_stmnt)
@@ -462,3 +515,73 @@ def iup_tst_tplate_item_ans(it: TstTemplateIt, ans: TstTemplateItAns) -> \
         if ans.id_ is None:
             return G3Result(4)
         return G3Result(0, (it, ans))
+
+
+def upd_tst_template_lc_pair(tst_tplate_id: int, lc_tup: tuple[Lc, Lc]) -> \
+        G3Result[None]:
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl: Table = MetaData_TRANS.tables['tst_tplate']
+        c = tbl.columns
+        stmnt = (update(tbl).
+                 where(c['id'] == tst_tplate_id).
+                 values(dict(lc=lc_tup[0].value,
+                             lc2=lc_tup[1].value)
+                        )
+                 )
+        rs = con.execute(stmnt)
+
+        if rs.rowcount != 1:
+            return G3Result(4)
+    return G3Result(0, None)
+
+
+def tst_tplate_refs(tst_tplate: TstTplate, con_: MockConnection = None) -> list[dict[str, ...]]:
+
+    def core_tst_tplate_refs(con: MockConnection) -> list[dict[str, ...]]:
+        tbl: Table = MetaData_TRANS.tables[ENT_TY_tst_tplate.tbl_name]
+        tbl_it: Table = MetaData_TRANS.tables[ENT_TY_tst_tplate_it.tbl_name]
+        # tbl_it_ans: Table = MetaData_TRANS.tables[ENT_TY_tst_tplate_it_ans.tbl_name]
+        # ans_id_li = [it_ans.id_ for it in tst_tplate.it_li for it_ans in it.ans_li ]
+        all_refs: list[dict[str, ...]] = []
+        it_id_li = [it.id_ for it in tst_tplate.it_li]
+        for id_ in it_id_li:
+            ref_li = settings.sel_cu_setng_ref_li(con, MetaData_TRANS, ELE_TY_tst_tplate_it_id, id_)
+            all_refs.extend(ref_li)
+        ref_li = settings.sel_cu_setng_ref_li(con, MetaData_TRANS, ELE_TY_tst_tplate_id, tst_tplate.id_)
+        all_refs.extend(ref_li)
+        return all_refs
+
+    if con_:
+        return core_tst_tplate_refs(con_)
+    else:
+        with Engine_TRANS.connect() as con_:
+            return core_tst_tplate_refs(con_)
+
+
+def tst_tplate_del(tst_tplate: TstTplate) -> G3Result:
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl: Table = MetaData_TRANS.tables[ENT_TY_tst_tplate.tbl_name]
+        tbl_it: Table = MetaData_TRANS.tables[ENT_TY_tst_tplate_it.tbl_name]
+        tbl_it_ans: Table = MetaData_TRANS.tables[ENT_TY_tst_tplate_it_ans.tbl_name]
+
+        # References from settings table
+        tbl_li: list[Table] = integrity.ref_cascade(tst_tplate)
+        if [tbl for tbl in tbl_li if tbl not in [tbl, tbl_it, tbl_it_ans]]:
+            return G3Result(4)
+
+        ans_id_li = [it_ans.id_ for it in tst_tplate.it_li for it_ans in it.ans_li ]
+        if ans_id_li:
+            stmnt: delete = delete(tbl_it_ans).where(tbl_it_ans.columns.id.in_(ans_id_li))
+            con.execute(stmnt)
+
+        it_id_li = [it.id_ for it in tst_tplate.it_li]
+        if it_id_li:
+            stmnt: delete = delete(tbl_it).where(tbl_it.columns.id.in_(it_id_li))
+            con.execute(stmnt)
+
+        stmnt: delete = delete(tbl).where(tbl.columns.id.in_([tst_tplate.id_]))
+        con.execute(stmnt)
+
+    return G3Result(0, None)

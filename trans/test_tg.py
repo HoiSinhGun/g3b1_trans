@@ -12,7 +12,7 @@ from trans import tg_hdl
 def main():
     utilities.logger.setLevel(logging.DEBUG)
     logging.getLogger().setLevel(logging.DEBUG)
-    dispatcher: Dispatcher = test_utils.setup(tg_hdl.__file__, trans.COLUMNS_TRANS)
+    dispatcher: Dispatcher = test_utils.setup(tg_hdl.__file__)
 
     ts: test_utils.TestSuite = test_utils.TestSuite(
         dispatcher, []

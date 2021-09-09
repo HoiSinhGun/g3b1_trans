@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/g3b1_trans.iml" filepath="$PROJECT_DIR$/.idea/g3b1_trans.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../sandbox/.idea/sandbox.iml" filepath="$PROJECT_DIR$/../sandbox/.idea/sandbox.iml" />
     </modules>
   </component>
 </project>

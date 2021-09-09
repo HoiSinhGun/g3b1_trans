@@ -3,13 +3,16 @@ import logging
 from telegram import Update
 from telegram.ext import CallbackContext
 
+import generic_hdl
+import tg_reply
+from entities import Entity
 from g3b1_data import settings, tg_db
-from g3b1_data.elements import ELE_TYP_cmd
+from g3b1_data.elements import ELE_TY_cmd, ELE_TY_cmd_prefix
 from g3b1_log.g3b1_log import cfg_logger
 from g3b1_serv import tgdata_main, utilities
 from g3b1_serv.utilities import G3Command, g3_m_dct
 from g3b1_serv.utilities import is_msg_w_cmd
-from trans import COLUMNS_TRANS
+from model import cmd_dct_by
 from trans import tg_hdl
 from trans.data import db
 
@@ -24,7 +27,7 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
     logger.debug(f'Target module: {g3_m_str}')
     # filter_r_g3cmd(utilities.)
     message = upd.effective_message
-    cmd_dct = utilities.cmd_dct_by(g3_m_str)
+    cmd_dct = cmd_dct_by(g3_m_str)
     text = message.text
     matched: bool = False
     # noinspection PyTypeChecker
@@ -33,13 +36,11 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
     if not is_msg_w_cmd(text):
         # prefix with translates default cmd
         cmd = db.read_setting(settings.chat_setting(
-            upd.effective_chat.id, ELE_TYP_cmd)).result
+            upd.effective_chat.id, ELE_TY_cmd)).result
         if cmd:
             text = f'.{cmd} {text}'
         is_command_explicit = False
-    if text.startswith('...'):
-        pass
-    elif text.startswith('..'):
+    if text.startswith('..') and not text.startswith('...'):
         pass
     elif text.startswith('.'):
         if text.strip() == '.':
@@ -47,6 +48,11 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
             text = latest_cmd.text
             is_command_explicit = False
             # pass text = utilities
+        if text.startswith('...'):
+            cmd_prefix = db.read_setting(settings.chat_user_setting(
+                upd.effective_chat.id, upd.effective_user.id, ELE_TY_cmd_prefix)).result
+            if cmd_prefix:
+                text = text.replace('...', cmd_prefix, 1)
         word_li = text.split(' ')
         test_if_cmd = text[1:].strip()
         if len(word_li) > 1:
@@ -67,10 +73,25 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
             test_if_cmd = 't__b'
         if test_if_cmd in cmd_dct.keys():
             g3_cmd = cmd_dct[test_if_cmd]
+            logger.debug(f'CMD: {g3_cmd}')
             if len(word_li) > 1:
+                if text.find('| ') != -1:  # and the_txt.find('| ') > 20:
+                    # Execute txt_seq_01 instead of t
+                    g3_cmd = cmd_dct['txt_seq_01']
+                    if test_if_cmd != 't' and test_if_cmd[:2] != 't__':
+                        tg_reply.reply(upd, f'The seq operator | '
+                                            f'may not be used with {test_if_cmd}!')
+                        return
                 ctx.args = word_li[1:]
             g3_cmd.handler(upd, ctx)
             matched = True
+        elif test_if_cmd.endswith('33'):
+            # list
+            ent_str = test_if_cmd[:-3]
+            ent_ty = Entity.by_id(ent_str)
+            if ent_ty:
+                # Generic list command on entity of type ent_ty
+                generic_hdl.cmd_ent_ty_33_li(upd, ctx, ent_ty=ent_ty)
         logger.debug(f'matched: {matched}')
     logger.debug(f"Handle message {message.message_id}")
     message.bot = ctx.bot
@@ -85,11 +106,11 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
 def start_bot():
     """Run the bot."""
     # str(bot_key): dict(db_row)
-    tgdata_main.start_bot(tg_hdl.__file__, COLUMNS_TRANS, hdl_for_message=hdl_message)
+    tgdata_main.start_bot(tg_hdl.__file__, hdl_for_message=hdl_message)
 
 
 def main() -> None:
-    exec(open(tgdata_main.__file__).read())
+    # exec(open(tgdata_main.__file__).read())
     start_bot()
     print('Finished')
 

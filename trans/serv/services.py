@@ -1,7 +1,7 @@
 import logging
 from typing import Callable
 
-from telegram import Update, Message
+from telegram import Update, Message, ParseMode
 
 import trans.data
 from g3b1_data import tg_db, elements, settings
@@ -11,9 +11,12 @@ from g3b1_data.settings import chat_user_setting
 from g3b1_log.g3b1_log import cfg_logger
 from g3b1_serv import tg_reply, utilities
 from g3b1_serv.tg_reply import bold
+from serv.internal import lc_check
+from serv.services import for_user
+from subscribe.data import db as subscribe_db
 from trans.data import db
-from trans.data.model import TxtLC, TxtLCMapping, TxtLCOnym, TxtSeq, TstTemplate, TstTemplateIt, \
-    TstTemplateItAns
+from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TstTplate, TstTplateIt, \
+    TstTplateItAns, Lc
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
@@ -24,67 +27,79 @@ def reg_user_if_new(chat_id: int, user_id: int):
     # db.ins_user_setting_default(user_id)
 
 
-def fiby_txt_lc(text, lc) -> TxtLC:
+def fiby_txt_lc(text, lc) -> Txtlc:
     """Find text in DB"""
-    return db.fiby_txt_lc(TxtLC(text, lc)).result
+    return db.fiby_txt_lc(Txtlc(text, lc)).result
 
 
-def find_or_ins_txtlc_with_txtlc_2(txt, lc, lc_2, translator=None) -> TxtLCMapping:
-    txt_mapping = find_txtlc_with_txtlc_2(txt, lc, lc_2, translator)
+def find_or_ins_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) -> TxtlcMp:
+    txt_mapping = find_txtlc_with_txtlc2(txt, lc, lc2, translator)
     if not txt_mapping.txtlc_src:
-        txtlc = db.ins_txtlc(TxtLC(txt, lc)).result
+        txtlc = db.ins_txtlc(Txtlc(txt, lc)).result
         txt_mapping.txtlc_src = txtlc
     return txt_mapping
 
 
-def find_txtlc_with_txtlc_2(txt, lc, lc_2, translator=None) -> TxtLCMapping:
-    """Find text in DB and if exist return it along with translation of translator for lc_2"""
+def find_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) -> TxtlcMp:
+    """Find text in DB and if exist return it along with translation of translator for lc2"""
     txtlc_find = fiby_txt_lc(txt, lc)
     if not txtlc_find:
-        return TxtLCMapping(None, None, lc_2)
-    txt_mapping: TxtLCMapping = db.fi_txt_mapping(txtlc_find, lc_2, translator).result  # -> TxtLCMapping
+        # noinspection PyTypeChecker
+        return TxtlcMp(None, None, lc2)
+    txt_mapping: TxtlcMp = db.fi_txt_mapping(txtlc_find, lc2, translator).result  # -> TxtLCMapping
     if not txt_mapping:
-        txt_mapping = TxtLCMapping(txtlc_find, None, lc_2)
+        # noinspection PyTypeChecker
+        txt_mapping = TxtlcMp(txtlc_find, None, lc2)
     return txt_mapping
 
 
-def find_or_ins_translation(txt, lc, lc_2) -> G3Result[TxtLCMapping]:
+def txtlc_cp_txt(lc_pair: tuple[Lc, Lc], txt: str) -> list[TxtlcMp]:
+    txtlc_li = db.txtlc_txt_cp(txt, lc_pair[0].value)
+    txt_map_li: list[TxtlcMp] = []
+    for txtlc in txtlc_li:
+        txt_map: TxtlcMp = find_or_ins_translation(txtlc.txt, lc_pair).result
+        txt_map_li.append(txt_map)
+    return txt_map_li
+
+
+def find_or_ins_translation(txt: str, lc_pair: tuple[Lc, Lc]) -> G3Result[TxtlcMp]:
     """Return text and translation, if not exists, create them with Google"""
-    lc_2 = lc_2.upper()
-    txt_mapping = find_or_ins_txtlc_with_txtlc_2(txt, lc, lc_2)
+    lc = lc_pair[0]
+    lc2 = lc_pair[1]
+    txt_mapping = find_or_ins_txtlc_with_txtlc2(txt, lc, lc2)
     if txt_mapping.txtlc_trg:
         return G3Result(0, txt_mapping)
 
     # next: Google translate
-    trg_txt: str = translate_google(txt, lc, lc_2)
+    trg_txt: str = translate_google(txt, lc.value, lc2.value)
     txt_mapping.translator = 'google'
     txt_mapping.score = 10
 
     return set_trg_of_map_and_save(txt_mapping, trg_txt)
 
 
-def iup_translation(txtlc: TxtLC, txtlc_2: TxtLC, translator: str, score: int = 80) -> G3Result:
+def iup_translation(txtlc: Txtlc, txtlc2: Txtlc, translator: str, score: int = 80) -> G3Result:
     """Update or insert txtlc pair"""
-    txt_mapping = find_or_ins_txtlc_with_txtlc_2(txtlc.txt, txtlc.lc, txtlc_2.lc, translator)
-    if txt_mapping.txtlc_trg and txt_mapping.txtlc_trg.txt == txtlc_2.txt \
+    txt_mapping = find_or_ins_txtlc_with_txtlc2(txtlc.txt, txtlc.lc, txtlc2.lc, translator)
+    if txt_mapping.txtlc_trg and txt_mapping.txtlc_trg.txt == txtlc2.txt \
             and txt_mapping.score == score:
         return G3Result(0, txt_mapping)
     txt_mapping.score = score
     txt_mapping.translator = translator
 
-    return set_trg_of_map_and_save(txt_mapping, txtlc_2.txt)
+    return set_trg_of_map_and_save(txt_mapping, txtlc2.txt)
 
 
-def set_trg_of_map_and_save(txt_mapping: TxtLCMapping, txt) -> G3Result:
-    txtlc_find = fiby_txt_lc(txt, txt_mapping.lc_2)
+def set_trg_of_map_and_save(txt_mapping: TxtlcMp, txt) -> G3Result:
+    txtlc_find = fiby_txt_lc(txt, txt_mapping.lc2)
     if not txtlc_find:
-        txtlc_find = db.ins_txtlc(TxtLC(txt, txt_mapping.lc_2)).result
+        txtlc_find = db.ins_txtlc(Txtlc(txt, txt_mapping.lc2)).result
     txt_mapping.txtlc_trg = txtlc_find
-    g3r: G3Result = db.ins_upd_txt_mapping(txt_mapping)
+    g3r: G3Result = db.iup_txt_mapping(txt_mapping)
     return g3r
 
 
-def translate_google(text: str, lc, lc_2) -> str:
+def translate_google(text: str, lc_str, lc2_str) -> str:
     """Translates text into the target language.
 
     Target must be an ISO 639-1 language code.
@@ -100,12 +115,12 @@ def translate_google(text: str, lc, lc_2) -> str:
 
     # Text can also be a sequence of strings, in which case this method
     # will return a sequence of results for each text.
-    result = translate_client.translate(text, source_language=lc, target_language=lc_2)
+    result = translate_client.translate(text, source_language=lc_str, target_language=lc2_str)
     # noinspection PyTypeChecker
     return result["translatedText"]
 
 
-def conv_onym_str_li(src_txt: str, trg_txt: str) -> (list, list, list, list):
+def conv_onym_str_li(src_txt: str, trg_txt: str) -> (list[str], list[str], list[str], list[str]):
     src_syn_li: list = []
     src_ant_li: list = []
     trg_syn_li: list = []
@@ -122,13 +137,13 @@ def conv_onym_str_li(src_txt: str, trg_txt: str) -> (list, list, list, list):
         syn_li = tup_tup[is_trg][0]
         ant_li = tup_tup[is_trg][1]
         if len(split_li) == 1:
-            ant_split_li = split_li[0].split(' ! ')
+            ant_split_li = split_li[0].split(' # ')
             syn_li.append(ant_split_li[0].strip())
             for ant in ant_split_li:
                 ant_li.append(ant.strip())
         else:
             for idx, item in enumerate(split_li):
-                ant_split_li = item.strip().split(' ! ')
+                ant_split_li = item.strip().split(' # ')
                 syn_li.append(ant_split_li[0].strip())
                 if idx == 0:
                     ant_li.append(ant_split_li[0].strip())
@@ -142,7 +157,7 @@ def conv_onym_str_li(src_txt: str, trg_txt: str) -> (list, list, list, list):
     return src_syn_li, src_ant_li, trg_syn_li, trg_ant_li
 
 
-def onyms_strs_from_txt_maps(txt_map: TxtLCMapping) -> (str, str):
+def onyms_strs_from_txt_maps(txt_map: TxtlcMp) -> (str, str):
     src_txtlc = txt_map.txtlc_src
     onym_tup = li_all_onym(src_txtlc)
     syn_str = ''
@@ -180,7 +195,12 @@ def i_reply_str_from_txt_map_li_vb(*p_li, **kw_p_li) -> str:
     return reply_str
 
 
-def i_reply_str_from_txt_map_li(idx_src_syn_last: int, lc: str, lc_2: str, txt_map_li: list[TxtLCMapping],
+def i_reply_str_from_txt_map_li_srcus(*p_li, **kw_p_li) -> str:
+    reply_str = i_reply_str_from_txt_map_li(*p_li, **kw_p_li, verbosity='u')
+    return reply_str
+
+
+def i_reply_str_from_txt_map_li(user_id: int, idx_src_syn_last: int, lc: str, lc2: str, txt_map_li: list[TxtlcMp],
                                 verbosity='') -> str:
     c = '='
     idx_all_last = len(txt_map_li) - 1
@@ -201,11 +221,15 @@ def i_reply_str_from_txt_map_li(idx_src_syn_last: int, lc: str, lc_2: str, txt_m
     if verbosity:
         if verbosity == 'v':
             reply_str = f'{bold(lc)}\n'
+        elif verbosity == 'u':
+            uname = subscribe_db.read_uname(user_id)
+            reply_str = f'{bold(uname)}\n'
         else:
             reply_str = ''
-        reply_str += f'{src_str}\n'
+        if verbosity in ['v', 'b']:
+            reply_str += f'{src_str}\n'
         if verbosity == 'v':
-            reply_str += f'\n{bold(lc_2)}\n'
+            reply_str += f'\n{bold(lc2)}\n'
         reply_str += f'{trg_str}'
         if verbosity == 'v':
             if syn_str or ant_str:
@@ -219,26 +243,96 @@ def i_reply_str_from_txt_map_li(idx_src_syn_last: int, lc: str, lc_2: str, txt_m
     return reply_str
 
 
-def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, lc: str,
-                        lc_2: str,
+def i_cmd_lc_view(upd: Update, chat_id, user_id, for_uname: str):
+    """Displays %lc% -> %lc2%"""
+    for_user_id = for_user(for_uname, user_id)
+    if not for_user_id:
+        tg_reply.cmd_err(upd)
+        return
+    if not for_uname:
+        for_uname = subscribe_db.read_uname(for_user_id)
+    lc = db.read_setting_w_fback(
+        settings.chat_user_setting(chat_id, for_user_id, ELE_TY_lc))
+    lc2 = db.read_setting_w_fback(
+        settings.chat_user_setting(chat_id, for_user_id, ELE_TY_lc2))
+    reply_str = f'{lc.result} -> {lc2.result}'
+    if for_uname:
+        reply_str = f'User: <b>{for_uname}</b>\n\n{reply_str}'
+
+    upd.effective_message.reply_html(reply_str)
+
+
+def hdl_cmd_languages(upd: Update):
+    """Display supported languages"""
+    reply_string = '\n'.join([i.value for i in Lc])
+    reply_string = 'Supported languages: \n\n<code>' + reply_string + '</code>'
+    upd.effective_message.reply_html(reply_string)
+
+
+def i_cmd_lc(upd: Update, chat_id, user_id, lc: str, is_hdl_retco=True, fallback: str = None):
+    reg_user_if_new(chat_id, user_id)
+    if not lc:
+        tg_reply.cmd_p_req(upd, 'lc')
+        return
+    lc = lc.upper()
+    if not lc_check(upd, lc):
+        hdl_cmd_languages(upd)
+        return
+
+    if fallback and fallback.lower() == 'x':
+        retco = db.iup_setting(settings.user_setting(user_id, ELE_TY_lc, lc)).retco
+    else:
+        retco = db.iup_setting(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc, lc)).retco
+    if is_hdl_retco:
+        utilities.hdl_retco(upd, logger, retco)
+
+
+def i_cmd_lc2(upd: Update, chat_id, user_id, lc2_str: str, is_handle_retco=True, fallback: str = None):
+    reg_user_if_new(chat_id, user_id)
+    if not lc2_str:
+        tg_reply.cmd_p_req(upd, 'lc')
+        hdl_cmd_languages(upd)
+        return
+    lc2_str = lc2_str.upper()
+
+    lc2: Lc
+    if not (lc2 := lc_check(upd, lc2_str)):
+        hdl_cmd_languages(upd)
+    if fallback and fallback.lower() == 'x':
+        retco = db.iup_setting(settings.user_setting(user_id, ELE_TY_lc2, lc2_str)).retco
+    else:
+        retco = db.iup_setting(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc2, lc2_str)).retco
+    if is_handle_retco:
+        utilities.hdl_retco(upd, logger, retco)
+
+
+def hdl_cmd_setng_cmd_prefix(upd: Update, cmd_prefix: str):
+    """Set the cmd prefix which replaces triple dot"""
+    chat_id, user_id = utilities.upd_extract_chat_user_id(upd)
+    setng_dct = settings.chat_user_setting(chat_id, user_id,
+                                           ELE_TY_cmd_prefix, cmd_prefix)
+    db.iup_setting(setng_dct)
+
+    tg_reply.send_settings(upd, setng_dct)
+
+
+def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, lc_pair: tuple[Lc, Lc],
                         reply_string_builder: Callable = i_reply_str_from_txt_map_li_v,
-                        is_send_reply=True) -> list[TxtLCMapping]:
+                        is_send_reply=True) -> list[TxtlcMp]:
     """ Save translation of the source message which is either the replied to message
      or your last message (not counting commands).
      If a text is provided in 2 lines, the first line will be the lc text.
-     The second line will be the lc_2 text. Any source message will be ignored.
+     The second line will be the lc2 text. Any source message will be ignored.
      If no text is provided, the source message will be translated by the bot instead """
     # Preparing the variables
-    if lc:
-        lc = lc.upper()
-    if lc_2:
-        lc_2 = lc_2.upper()
+    lc, lc2 = lc_pair
 
-    if not lc or not lc_2:
+    if not lc or not lc2:
         tg_reply.reply(upd, 'Call /lc_pair XX-XX \nExamples:\n/lc_pair DE-EN\n/lc_pair RU-DE\n/lc_pair VI-EN')
         return []
 
     src_txt, trg_txt = '', ''
+    # noinspection PyUnusedLocal
     reply_msg_id = None
     line_li = []
     if text:
@@ -253,6 +347,7 @@ def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, 
         if utilities.is_msg_w_cmd(src_txt):
             src_txt = src_txt.split(' ', 1)[1]
         trg_txt = text
+        # noinspection PyUnusedLocal
         reply_msg_id = src_msg.message_id
     else:
         src_txt = text
@@ -280,7 +375,7 @@ def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, 
         logger.error('reply_to_msg now empty?')
         return []
     # ant_li ab idx 1
-    # ohne trg: do translations, put in list of txtLCMapping
+    # w/o trg: do translations, put in list of txtLCMapping
     # txt_map_li: use substring, join the text either with =, !
     # do last step for src and trg
     src_li = list(src_syn_li)
@@ -291,108 +386,80 @@ def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, 
     idx_trg_last = len(trg_li) - 1
     for idx, src in enumerate(src_li):
         if not trg_txt or idx_trg_last < idx:
-            txt_map: TxtLCMapping = find_or_ins_translation(src, lc, lc_2).result
+            txt_map: TxtlcMp = find_or_ins_translation(src, lc_pair).result
             txt_map_li.append(txt_map)
         else:
             trg = trg_li[idx]
-            g3r = iup_translation(TxtLC(src, lc), TxtLC(trg, lc_2), str(user_id))
+            g3r = iup_translation(Txtlc(src, lc), Txtlc(trg, lc2), str(user_id))
             txt_map_li.append(g3r.result)
 
     idx_src_syn_last = len(src_syn_li) - 1
-    reply_str = reply_string_builder(idx_src_syn_last, lc, lc_2, txt_map_li)
+    reply_str = reply_string_builder(user_id, idx_src_syn_last, lc, lc2, txt_map_li)
     ins_onyms_from_str_li(lc, src_syn_li, str(user_id), 'syn')
     ins_onyms_from_str_li(lc, src_ant_li, str(user_id), 'ant')
     if is_send_reply:
         # upd.effective_message.reply_html(reply_str, reply_to_message_id=reply_msg_id)
-        upd.effective_message.reply_html(reply_str, reply_to_message_id=None)
+        upd.effective_message.bot.send_message(
+            chat_id=upd.effective_chat.id,
+            text=reply_str,
+            parse_mode=ParseMode.HTML
+        )
+        # upd.effective_message.reply_html(reply_str, reply_to_message_id=None)
     return txt_map_li
 
 
-def translate_all_since(reply_to_msg: Message, lc: str, lc_2: str) \
-        -> (list[TxtLCMapping], list[dict]):
+def translate_all_since(reply_to_msg: Message, lc_pair: tuple[Lc, Lc]) \
+        -> (list[TxtlcMp], list[dict]):
     chat_id = reply_to_msg.chat.id
     user_id = reply_to_msg.from_user.id
     from_msg_id = reply_to_msg.message_id
     msg_dct_li = tg_db.sel_msg_rng_by_chat_user(from_msg_id, chat_id, user_id).result
-    txt_map_li: list[TxtLCMapping] = []
+    txt_map_li: list[TxtlcMp] = []
     for msg_dct in msg_dct_li:
-        translation: TxtLCMapping = find_or_ins_translation(msg_dct['text'], lc, lc_2).result
+        translation: TxtlcMp = find_or_ins_translation(msg_dct['text'], lc_pair).result
         txt_map_li.append(translation)
     return msg_dct_li, txt_map_li
 
 
-def li_all_onym(txtlc: TxtLC) -> tuple[list[TxtLCOnym]]:
+def li_all_onym(txtlc: Txtlc) -> tuple[list[TxtlcOnym]]:
     return db.li_onym_by_txtlc(txtlc).result
 
 
-def ins_onyms_from_str_li(lc: str, str_li: list[str], creator: str, onym_ty='syn') -> None:
+def ins_onyms_from_str_li(lc: Lc, str_li: list[str], creator: str, onym_ty='syn') -> None:
     if len(str_li) < 2:
         return
-    txtlc_src = db.fiby_txt_lc(TxtLC(str_li[0], lc)).result
+    txtlc_src = db.fiby_txt_lc(Txtlc(str_li[0], lc)).result
     for onym in str_li[1:]:
-        txtlc_trg = db.fiby_txt_lc(TxtLC(onym, lc)).result
-        g3r = db.ins_onym(TxtLCOnym(txtlc_src, txtlc_trg, creator, onym_ty))
+        txtlc_trg = db.fiby_txt_lc(Txtlc(onym, lc)).result
+        g3r = db.ins_onym(TxtlcOnym(txtlc_src, txtlc_trg, creator, onym_ty))
         if g3r.retco == 0:
             id_ = g3r.result.id_
             logger.debug(f'Inserted Onym Mapping, ID:{id_}')
 
 
-def ins_seq_if_new(src_str: str, lc: str, lc2: str, txt_map_li: list[TxtLCMapping],
-                   chat_id: int, user_id: int):
+def ins_seq_if_new(src_str: str, lc_pair: tuple[Lc, Lc], txt_map_li: list[TxtlcMp],
+                   chat_id: int, user_id: int) -> TxtSeq:
     # src_str = src_str.lower()
-    txt_map: TxtLCMapping = find_or_ins_translation(src_str, lc, lc2).result
+    txt_map: TxtlcMp = find_or_ins_translation(src_str, lc_pair).result
     txt_seq = TxtSeq(txt_map.txtlc_src)
-    txt_seq.convert_to_item_li(txt_map_li)
-    txt_seq = db.find_seq(txt_seq)
+    txt_seq.convert_to_it_li(txt_map_li)
+    txt_seq = db.sel_txt_seq_by_uq(txt_seq)
     if not txt_seq.id_:
         txt_seq = db.ins_seq(txt_seq).result
     db.iup_setting(
         chat_user_setting(chat_id, user_id,
-                          elements.ELE_TYP_txt_seq_id, str(txt_seq.id_))
+                          elements.ELE_TY_txt_seq_id, str(txt_seq.id_))
     )
-
-
-def find_curr_txt_seq(chat_id: int, user_id: int) -> TxtSeq:
-    txt_seq_id = db.read_setting(chat_user_setting(chat_id, user_id, ELE_TYP_txt_seq_id)).result
-    if not txt_seq_id:
-        return
-    txt_seq: TxtSeq = db.get_txt_seq(txt_seq_id).result
     return txt_seq
 
 
-def execute_split(lc, lc_2, split_str, src_msg_text):
-    split_li: list[str] = split_str.split(',')
-    word_li = src_msg_text.split(' ')
-    word_li_len = len(word_li)
-    if int(split_li[len(split_li) - 1]) < word_li_len:
-        # to simplify the algorithm
-        split_li.append(str(word_li_len + 1))
-    start_index = 0
-    trans_dct = dict[int, dict[str, str]]()
-    word_li_remain: list[str]
-    txt_map_li: list[TxtLCMapping] = []
-    for count, split_after in enumerate(split_li):
-        split_after = int(split_after)
-        if split_after >= word_li_len:
-            split_after = word_li_len
-            word_li_remain = []
-        else:
-            word_li_remain = word_li[split_after:word_li_len]
-        words_to_join_li = word_li[start_index:split_after]
-        src_str = ' '.join(words_to_join_li)
-        translation: TxtLCMapping = find_or_ins_translation(
-            src_str, lc, lc_2).result
-        txt_map_li.append(translation)
-        trg_str = translation.txtlc_trg.txt
-        word_dct = dict(
-            src=src_str,
-            trg=trg_str
-        )
-        trans_dct.update({count: word_dct})
-        start_index = split_after
-        if len(word_li_remain) == 0:
-            break
-    return trans_dct, txt_map_li
+def find_curr_txt_seq(chat_id: int, user_id: int) -> TxtSeq:
+    txt_seq_id = db.read_setting(chat_user_setting(chat_id, user_id, ELE_TY_txt_seq_id)).result
+    if not txt_seq_id:
+        # noinspection PyTypeChecker
+        return
+    txt_seq: TxtSeq = db.sel_txt_seq(txt_seq_id).result
+    return txt_seq
 
 
 def split_on_split(seq_str: str, op: str) -> G3Result[str]:
@@ -429,11 +496,13 @@ def split_on_split(seq_str: str, op: str) -> G3Result[str]:
     return G3Result(0, ','.join(seq_str_li))
 
 
-def create_test(tst_type: str, bkey: str, txt_map_li: list[TxtLCMapping], lc: str, lc_2: str) -> TstTemplate:
-    g3r = db.sel_tst_tplate_by_bk(bkey)
+def create_test(tst_type: str, bkey: str, user_id: int, txt_map_li: list[TxtlcMp],
+                lc_pair: tuple[Lc, Lc]) -> TstTplate:
+    g3r = db.sel_tst_tplate__bk(bkey)
     if g3r.retco == 0:
+        # noinspection PyTypeChecker
         return None
-    tst_template = TstTemplate(tst_type, bkey, lc, lc_2)
+    tst_template = TstTplate(tst_type, bkey, user_id, lc_pair[0], lc_pair[1])
     tst_template.add_items_from_map(txt_map_li)
     g3r = db.ins_tst_tplate(tst_template)
 
@@ -441,22 +510,42 @@ def create_test(tst_type: str, bkey: str, txt_map_li: list[TxtLCMapping], lc: st
 
 
 def read_lc_settings_w_fback(chat_id: int, user_id: int) -> (str, str):
-    lc = db.read_setting_w_fback(settings.chat_user_setting(chat_id, user_id, ELE_TYP_lc)).result
-    lc_2 = db.read_setting_w_fback(settings.chat_user_setting(chat_id, user_id, ELE_TYP_lc2)).result
-    return lc, lc_2
+    lc = db.read_setting_w_fback(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc)).result
+    lc2 = db.read_setting_w_fback(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc2)).result
+    return lc, lc2
 
 
-def tst_new_qt(tst_tplate: TstTemplate, qt_str: str) -> TstTemplateIt:
-    txtlc_qt: TxtLC = find_or_ins_translation(qt_str, tst_tplate.lc, tst_tplate.lc_2).result.txtlc_src
-    tst_tplate_item: TstTemplateIt = \
-        TstTemplateIt(tst_tplate, txtlc_qt, tst_tplate.nxt_num())
+def setng_read_lc_pair(chat_id: int, user_id: int) -> (Lc, Lc):
+    lc_str_pair = read_lc_settings_w_fback(chat_id, user_id)
+    return Lc.find_lc(lc_str_pair[0]), Lc.find_lc(lc_str_pair[1])
+
+
+def tst_new_qt(chat_id: int, tst_tplate: TstTplate, qt_str: str) -> TstTplateIt:
+    if qt_str == f'.{ENT_TY_txt_seq.id_}.':
+        txt_seq: TxtSeq = find_curr_txt_seq(chat_id, tst_tplate.user_id)
+        # noinspection PyTypeChecker
+        txtlc_qt = None
+    else:
+        # noinspection PyTypeChecker
+        txt_seq = None
+        txtlc_qt: Txtlc = find_or_ins_translation(qt_str, tst_tplate.lc_pair()).result.txtlc_src
+    tst_tplate_item: TstTplateIt = \
+        TstTplateIt(tst_tplate, txt_seq, txtlc_qt, tst_tplate.nxt_num())
     return tst_tplate_item
 
 
-def tst_new_ans(tst_tplate: TstTemplate, tst_tplate_it: TstTemplateIt, ans_str: str) -> (
-        TstTemplateIt, TstTemplateItAns):
-    txtlc_ans: TxtLC = find_or_ins_translation(ans_str, tst_tplate.lc, tst_tplate.lc_2).result.txtlc_src
-    if txtlc_ans in tst_tplate_it.txtlc_ans_li:
-        return None, None
-    tst_tplate_it_ans = tst_tplate_it.add_answer(txtlc_ans)
+def tst_tplate_it_ans_01(tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str) -> (
+        TstTplateIt, TstTplateItAns):
+    if ans_str.startswith(f'.{ENT_TY_txt_seq_it.id_}-'):
+        itnum = ans_str.split('-')[1][:-1]
+        txt_seq_it = tst_tplate_it.txt_seq.it(int(itnum))
+        # noinspection PyTypeChecker
+        txtlc_ans = None
+    else:
+        # noinspection PyTypeChecker
+        txt_seq_it = None
+        txtlc_ans: Txtlc = find_or_ins_translation(ans_str, tst_tplate.lc_pair()).result.txtlc_src
+        if txtlc_ans in tst_tplate_it.ans_li:
+            return None, None
+    tst_tplate_it_ans = tst_tplate_it.add_answer(txt_seq_it, txtlc_ans)
     return tst_tplate_it, tst_tplate_it_ans
