@@ -1,16 +1,18 @@
 from typing import Optional
 
+from telegram import Update
+
 import elements
 import settings
 from g3b1_data.elements import *
 from g3b1_data.model import G3Result
 from g3b1_data.settings import chat_user_setting
-from g3b1_serv.tg_reply import *
+from g3b1_serv import tg_reply
+from tg_reply import italic, code
+
 from trans.data import db, TST_TY_LI
 from trans.data.db import iup_setting
-from trans.data.model import TstTplate, TstTplateIt, Lc, TxtlcMp, TxtSeq
-from trans.serv import services
-from utilities import TableDef, TgColumn
+from trans.data.model import TstTplate, TstTplateIt, Lc, TstTplateItAns
 
 
 def i_sel_tst_tplate_bk(upd: Update, bkey: str) -> Optional[TstTplate]:
@@ -40,64 +42,6 @@ def i_tst_qt_mode_exe(upd: Update, tst_tplate: TstTplate, tst_tplate_it: TstTpla
     upd.effective_message.reply_html(reply_str)
 
 
-def i_tst_qt_mode_edit(upd: Update, chat_id, user_id, tst_tplate: TstTplate, qt_str: str):
-    it_wo_ans_li = tst_tplate.items_wo_ans()
-    len_wo_ans = len(it_wo_ans_li)
-    # noinspection PyTypeChecker
-    tst_tplate_it: TstTplateIt = None
-
-    if len_wo_ans > 0:
-        tst_tplate_it = it_wo_ans_li[0]
-
-    if not qt_str:
-        if len_wo_ans == 0:
-            upd.effective_message.reply_html(f'{tst_tplate.label()}\n\n'
-                                             f'You can add more questions with /tst_tplate_qt %question%!')
-            return
-        upd.effective_message.reply_html(f'{tst_tplate.label()}\n\n'
-                                         f'{len_wo_ans} questions have no answers yet.\n'
-                                         f'Provide answers with /tst_tplate_ans %ans_str%!\n\nNext missing:\n'
-                                         f'{tst_tplate_it.label()}')
-        if tst_tplate_it and tst_tplate_it.id_:
-            iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, str(tst_tplate_it.id_)))
-        return
-
-    tst_tplate_it = services.tst_new_qt(chat_id, tst_tplate, qt_str)
-    tst_tplate.it_li.append(tst_tplate_it)
-    g3r: [(TstTplate, TstTplateIt)] = db.ins_tst_tplate_item(tst_tplate, tst_tplate_it)
-    if g3r.retco != 0:
-        cmd_err(upd)
-        return
-    tst_tplate, tst_tplate_it = g3r.result
-
-    if tst_tplate_it and tst_tplate_it.id_:
-        iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, str(tst_tplate_it.id_)))
-    tst_item_lbl = tst_tplate_it.label() + '\n'
-    reply_str = f'Question added to test {tst_tplate.bkey}\n\n' \
-                f'{tst_item_lbl}'
-    upd.effective_message.reply_html(reply_str)
-
-
-def i_tst_ans_mode_exe(upd: Update, tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str):
-    ans_str_li = ans_str.split('\n')
-    if len(ans_str_li) != len(tst_tplate_it.ans_li):
-        tg_reply.reply(upd, f'Sorry bro/sis, your answer is wrong!')
-        return
-    for idx, ans_i in enumerate(ans_str_li):
-        ans_i_comp = ans_i.strip().lower()
-        ans_correct = tst_tplate_it.ans_li[idx].txtlc_src().txt
-        if ans_i_comp != ans_correct:
-            tg_reply.reply(upd, f'Sorry bro/sis, your answer is wrong!')
-            return
-    tg_reply.reply(upd, 'Excellent!')
-    tst_tplate_it_next = tst_tplate.item_next(tst_tplate_it.itnum)
-    if tst_tplate_it_next:
-        tg_reply.reply(upd, f'Please proceed to the next question with /tst_tplate_qt')
-    else:
-        tg_reply.reply(upd, f'Test {tst_tplate.bkey} finished!')
-    return tst_tplate_it_next
-
-
 def i_extract_split_string(txt: str) -> str:
     if txt.find('| ') == -1:
         return ''
@@ -115,16 +59,6 @@ def i_extract_split_string(txt: str) -> str:
     return split_str
 
 
-def i_tst_ans_mode_edit(upd: Update, tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str):
-    """Add answer to the current item"""
-    tst_tplate_it, tst_tplate_it_ans = services.tst_tplate_it_ans_01(tst_tplate, tst_tplate_it, ans_str)
-    if not tst_tplate_it:
-        tg_reply.cmd_err(upd)
-        upd.effective_message.reply_html(f'Does the answer already exist for the question of the current tst_item?')
-        return
-    db.iup_tst_tplate_it_ans(tst_tplate_it, tst_tplate_it_ans)
-
-
 def i_iup_setng_tst_template(chat_id: int, user_id: int, tst_template: TstTplate) -> G3Result:
     return iup_setting(
         chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_id, str(tst_template.id_))
@@ -136,51 +70,6 @@ def i_tst_types(upd: Update):
     for i in TST_TY_LI:
         reply_str += f'{str(i["id"]).rjust(4)} = {i["bkey"].ljust(40)}\n{i["descr"].ljust(40)}\n\n'
     upd.effective_message.reply_html(code(reply_str))
-
-
-def i_execute_split_and_send(chat_id, lc_pair: tuple[Lc, Lc], split_str, src_msg_text, upd, user_id):
-    row_li, txt_map_li = i_execute_split(lc_pair, split_str, src_msg_text)
-    txt_seq: TxtSeq = services.ins_seq_if_new(src_msg_text, lc_pair, txt_map_li, chat_id, user_id)
-    tbl_def = TableDef(
-        [TgColumn('src', -1, 'src', 30), TgColumn('trg', -1, 'trg', 30)])
-    reply_str = f'Split positions: {tg_reply.bold(split_str)}\n\n'
-    tg_reply.send_table(upd, tbl_def, row_li, reply_str)
-
-
-def i_execute_split(lc_pair: tuple[Lc, Lc], split_str, src_msg_text) \
-        -> (list[dict[str, str]], list[TxtlcMp]):
-    split_li: list[str] = split_str.split(',')
-    word_li = src_msg_text.split(' ')
-    word_li_len = len(word_li)
-    if int(split_li[len(split_li) - 1]) < word_li_len:
-        # to simplify the algorithm
-        split_li.append(str(word_li_len + 1))
-    start_index = 0
-    row_li = list[dict[str, str]]()
-    word_li_remain: list[str]
-    txt_map_li: list[TxtlcMp] = []
-    for count, split_after in enumerate(split_li):
-        split_after = int(split_after)
-        if split_after >= word_li_len:
-            split_after = word_li_len
-            word_li_remain = []
-        else:
-            word_li_remain = word_li[split_after:word_li_len]
-        words_to_join_li = word_li[start_index:split_after]
-        src_str = ' '.join(words_to_join_li)
-        translation: TxtlcMp = services.find_or_ins_translation(
-            src_str, lc_pair).result
-        txt_map_li.append(translation)
-        trg_str = translation.txtlc_trg.txt
-        word_dct = dict(
-            src=src_str,
-            trg=trg_str
-        )
-        row_li.append(word_dct)
-        start_index = split_after
-        if len(word_li_remain) == 0:
-            break
-    return row_li, txt_map_li
 
 
 def i_iup_setng_tst_tplate_w_it(chat_id: int, user_id: int,
@@ -278,3 +167,9 @@ def i_tst_tplate_it_by_setng(chat_id: int, user_id: int) -> (TstTplate, TstTplat
         # noinspection PyTypeChecker
         return tst_tplate, None
     return tst_tplate_by_item, tst_tplate_by_item.item_by_id(item_id)
+
+
+def i_tst_run_q_ans_info(ans: TstTplateItAns) -> str:
+    info_str = ans.tst_tplate_it.label() + '\n\n'
+    info_str += f'Answer for number: {ans.ans_num}'
+    return info_str

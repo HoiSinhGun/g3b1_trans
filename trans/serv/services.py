@@ -1,22 +1,19 @@
-import logging
+from random import shuffle
 from typing import Callable
 
-from telegram import Update, Message, ParseMode
+from telegram import ParseMode, Message
 
+import tg_db
 import trans.data
-from g3b1_data import tg_db, elements, settings
-from g3b1_data.elements import *
-from g3b1_data.model import G3Result
-from g3b1_data.settings import chat_user_setting
-from g3b1_log.g3b1_log import cfg_logger
-from g3b1_serv import tg_reply, utilities
-from g3b1_serv.tg_reply import bold
-from serv.internal import lc_check
-from serv.services import for_user
+from g3b1_log.g3b1_log import *
+from g3b1_serv import utilities
+from generic_mdl import TgColumn, TableDef
 from subscribe.data import db as subscribe_db
-from trans.data import db
-from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TstTplate, TstTplateIt, \
-    TstTplateItAns, Lc
+from subscribe.serv.services import for_user
+from tg_reply import bold, cmd_err
+from trans.data.enums import ActTy, Sus
+from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TstRun
+from trans.serv.internal import *
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
@@ -27,14 +24,16 @@ def reg_user_if_new(chat_id: int, user_id: int):
     # db.ins_user_setting_default(user_id)
 
 
-def fiby_txt_lc(text, lc) -> Txtlc:
+def fiby_txt_lc(text: str, lc: Lc) -> Txtlc:
     """Find text in DB"""
+    # noinspection PyArgumentList
     return db.fiby_txt_lc(Txtlc(text, lc)).result
 
 
 def find_or_ins_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) -> TxtlcMp:
     txt_mapping = find_txtlc_with_txtlc2(txt, lc, lc2, translator)
     if not txt_mapping.txtlc_src:
+        # noinspection PyArgumentList
         txtlc = db.ins_txtlc(Txtlc(txt, lc)).result
         txt_mapping.txtlc_src = txtlc
     return txt_mapping
@@ -44,11 +43,11 @@ def find_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) -> TxtlcM
     """Find text in DB and if exist return it along with translation of translator for lc2"""
     txtlc_find = fiby_txt_lc(txt, lc)
     if not txtlc_find:
-        # noinspection PyTypeChecker
+        # noinspection PyTypeChecker,PyArgumentList
         return TxtlcMp(None, None, lc2)
     txt_mapping: TxtlcMp = db.fi_txt_mapping(txtlc_find, lc2, translator).result  # -> TxtLCMapping
     if not txt_mapping:
-        # noinspection PyTypeChecker
+        # noinspection PyTypeChecker,PyArgumentList
         txt_mapping = TxtlcMp(txtlc_find, None, lc2)
     return txt_mapping
 
@@ -93,6 +92,7 @@ def iup_translation(txtlc: Txtlc, txtlc2: Txtlc, translator: str, score: int = 8
 def set_trg_of_map_and_save(txt_mapping: TxtlcMp, txt) -> G3Result:
     txtlc_find = fiby_txt_lc(txt, txt_mapping.lc2)
     if not txtlc_find:
+        # noinspection PyArgumentList
         txtlc_find = db.ins_txtlc(Txtlc(txt, txt_mapping.lc2)).result
     txt_mapping.txtlc_trg = txtlc_find
     g3r: G3Result = db.iup_txt_mapping(txt_mapping)
@@ -118,6 +118,62 @@ def translate_google(text: str, lc_str, lc2_str) -> str:
     result = translate_client.translate(text, source_language=lc_str, target_language=lc2_str)
     # noinspection PyTypeChecker
     return result["translatedText"]
+
+
+def i_tst_ans_mode_edit(upd: Update, tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str):
+    """Add answer to the current item"""
+    tst_tplate_it, tst_tplate_it_ans = tst_tplate_it_ans_01(tst_tplate, tst_tplate_it, ans_str)
+    if not tst_tplate_it:
+        tg_reply.cmd_err(upd)
+        upd.effective_message.reply_html(f'Does the answer already exist for the question of the current tst_item?')
+        return
+    db.iup_tst_tplate_it_ans(tst_tplate_it, tst_tplate_it_ans)
+
+
+def i_execute_split_and_send(chat_id, lc_pair: tuple[Lc, Lc], split_str, src_msg_text, upd, user_id):
+    row_li, txt_map_li = i_execute_split(lc_pair, split_str, src_msg_text)
+    # noinspection PyUnusedLocal
+    txt_seq: TxtSeq = ins_seq_if_new(src_msg_text, lc_pair, txt_map_li, chat_id, user_id)
+    tbl_def = TableDef(
+        [TgColumn('src', -1, 'src', 30), TgColumn('trg', -1, 'trg', 30)])
+    reply_str = f'Split positions: {tg_reply.bold(split_str)}\n\n'
+    tg_reply.send_table(upd, tbl_def, row_li, reply_str)
+
+
+def i_execute_split(lc_pair: tuple[Lc, Lc], split_str, src_msg_text) \
+        -> (list[dict[str, str]], list[TxtlcMp]):
+    split_li: list[str] = split_str.split(',')
+    word_li = src_msg_text.split(' ')
+    word_li_len = len(word_li)
+    if int(split_li[len(split_li) - 1]) < word_li_len:
+        # to simplify the algorithm
+        split_li.append(str(word_li_len + 1))
+    start_index = 0
+    row_li = list[dict[str, str]]()
+    word_li_remain: list[str]
+    txt_map_li: list[TxtlcMp] = []
+    for count, split_after in enumerate(split_li):
+        split_after = int(split_after)
+        if split_after >= word_li_len:
+            split_after = word_li_len
+            word_li_remain = []
+        else:
+            word_li_remain = word_li[split_after:word_li_len]
+        words_to_join_li = word_li[start_index:split_after]
+        src_str = ' '.join(words_to_join_li)
+        translation: TxtlcMp = find_or_ins_translation(
+            src_str, lc_pair).result
+        txt_map_li.append(translation)
+        trg_str = translation.txtlc_trg.txt
+        word_dct = dict(
+            src=src_str,
+            trg=trg_str
+        )
+        row_li.append(word_dct)
+        start_index = split_after
+        if len(word_li_remain) == 0:
+            break
+    return row_li, txt_map_li
 
 
 def conv_onym_str_li(src_txt: str, trg_txt: str) -> (list[str], list[str], list[str], list[str]):
@@ -280,11 +336,11 @@ def i_cmd_lc(upd: Update, chat_id, user_id, lc: str, is_hdl_retco=True, fallback
         return
 
     if fallback and fallback.lower() == 'x':
-        retco = db.iup_setting(settings.user_setting(user_id, ELE_TY_lc, lc)).retco
+        g3r = db.iup_setting(settings.user_setting(user_id, ELE_TY_lc, lc))
     else:
-        retco = db.iup_setting(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc, lc)).retco
+        g3r = db.iup_setting(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc, lc))
     if is_hdl_retco:
-        utilities.hdl_retco(upd, logger, retco)
+        tg_reply.hdl_retco(upd, logger, g3r)
 
 
 def i_cmd_lc2(upd: Update, chat_id, user_id, lc2_str: str, is_handle_retco=True, fallback: str = None):
@@ -295,15 +351,15 @@ def i_cmd_lc2(upd: Update, chat_id, user_id, lc2_str: str, is_handle_retco=True,
         return
     lc2_str = lc2_str.upper()
 
-    lc2: Lc
-    if not (lc2 := lc_check(upd, lc2_str)):
+    if not (lc_check(upd, lc2_str)):
         hdl_cmd_languages(upd)
+        return
     if fallback and fallback.lower() == 'x':
-        retco = db.iup_setting(settings.user_setting(user_id, ELE_TY_lc2, lc2_str)).retco
+        g3r = db.iup_setting(settings.user_setting(user_id, ELE_TY_lc2, lc2_str))
     else:
-        retco = db.iup_setting(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc2, lc2_str)).retco
+        g3r = db.iup_setting(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc2, lc2_str))
     if is_handle_retco:
-        utilities.hdl_retco(upd, logger, retco)
+        tg_reply.hdl_retco(upd, logger, g3r)
 
 
 def hdl_cmd_setng_cmd_prefix(upd: Update, cmd_prefix: str):
@@ -314,6 +370,64 @@ def hdl_cmd_setng_cmd_prefix(upd: Update, cmd_prefix: str):
     db.iup_setting(setng_dct)
 
     tg_reply.send_settings(upd, setng_dct)
+
+
+def i_tst_qt_mode_edit(upd: Update, chat_id, user_id, tst_tplate: TstTplate, qt_str: str):
+    it_wo_ans_li = tst_tplate.items_wo_ans()
+    len_wo_ans = len(it_wo_ans_li)
+    # noinspection PyTypeChecker
+    tst_tplate_it: TstTplateIt = None
+
+    if len_wo_ans > 0:
+        tst_tplate_it = it_wo_ans_li[0]
+
+    if not qt_str:
+        if len_wo_ans == 0:
+            upd.effective_message.reply_html(f'{tst_tplate.label()}\n\n'
+                                             f'You can add more questions with /tst_tplate_qt %question%!')
+            return
+        upd.effective_message.reply_html(f'{tst_tplate.label()}\n\n'
+                                         f'{len_wo_ans} questions have no answers yet.\n'
+                                         f'Provide answers with /tst_tplate_ans %ans_str%!\n\nNext missing:\n'
+                                         f'{tst_tplate_it.label()}')
+        if tst_tplate_it and tst_tplate_it.id_:
+            iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, str(tst_tplate_it.id_)))
+        return
+
+    tst_tplate_it = tst_new_qt(chat_id, tst_tplate, qt_str)
+    tst_tplate.it_li.append(tst_tplate_it)
+    g3r: [(TstTplate, TstTplateIt)] = db.ins_tst_tplate_item(tst_tplate, tst_tplate_it)
+    if g3r.retco != 0:
+        cmd_err(upd)
+        return
+    tst_tplate, tst_tplate_it = g3r.result
+
+    if tst_tplate_it and tst_tplate_it.id_:
+        iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, str(tst_tplate_it.id_)))
+    tst_item_lbl = tst_tplate_it.label() + '\n'
+    reply_str = f'Question added to test {tst_tplate.bkey}\n\n' \
+                f'{tst_item_lbl}'
+    upd.effective_message.reply_html(reply_str)
+
+
+def i_tst_ans_mode_exe(upd: Update, tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str):
+    ans_str_li = ans_str.split('\n')
+    if len(ans_str_li) != len(tst_tplate_it.ans_li):
+        tg_reply.reply(upd, f'Sorry bro/sis, your answer is wrong!')
+        return
+    for idx, ans_i in enumerate(ans_str_li):
+        ans_i_comp = ans_i.strip().lower()
+        ans_correct = tst_tplate_it.ans_li[idx].txtlc_src().txt
+        if ans_i_comp != ans_correct:
+            tg_reply.reply(upd, f'Sorry bro/sis, your answer is wrong!')
+            return
+    tg_reply.reply(upd, 'Excellent!')
+    tst_tplate_it_next = tst_tplate.item_next(tst_tplate_it.itnum)
+    if tst_tplate_it_next:
+        tg_reply.reply(upd, f'Please proceed to the next question with /tst_tplate_qt')
+    else:
+        tg_reply.reply(upd, f'Test {tst_tplate.bkey} finished!')
+    return tst_tplate_it_next
 
 
 def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, lc_pair: tuple[Lc, Lc],
@@ -390,6 +504,7 @@ def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, 
             txt_map_li.append(txt_map)
         else:
             trg = trg_li[idx]
+            # noinspection PyArgumentList
             g3r = iup_translation(Txtlc(src, lc), Txtlc(trg, lc2), str(user_id))
             txt_map_li.append(g3r.result)
 
@@ -428,9 +543,12 @@ def li_all_onym(txtlc: Txtlc) -> tuple[list[TxtlcOnym]]:
 def ins_onyms_from_str_li(lc: Lc, str_li: list[str], creator: str, onym_ty='syn') -> None:
     if len(str_li) < 2:
         return
+    # noinspection PyArgumentList
     txtlc_src = db.fiby_txt_lc(Txtlc(str_li[0], lc)).result
     for onym in str_li[1:]:
+        # noinspection PyArgumentList
         txtlc_trg = db.fiby_txt_lc(Txtlc(onym, lc)).result
+        # noinspection PyArgumentList
         g3r = db.ins_onym(TxtlcOnym(txtlc_src, txtlc_trg, creator, onym_ty))
         if g3r.retco == 0:
             id_ = g3r.result.id_
@@ -441,6 +559,7 @@ def ins_seq_if_new(src_str: str, lc_pair: tuple[Lc, Lc], txt_map_li: list[TxtlcM
                    chat_id: int, user_id: int) -> TxtSeq:
     # src_str = src_str.lower()
     txt_map: TxtlcMp = find_or_ins_translation(src_str, lc_pair).result
+    # noinspection PyArgumentList
     txt_seq = TxtSeq(txt_map.txtlc_src)
     txt_seq.convert_to_it_li(txt_map_li)
     txt_seq = db.sel_txt_seq_by_uq(txt_seq)
@@ -502,6 +621,7 @@ def create_test(tst_type: str, bkey: str, user_id: int, txt_map_li: list[TxtlcMp
     if g3r.retco == 0:
         # noinspection PyTypeChecker
         return None
+    # noinspection PyArgumentList
     tst_template = TstTplate(tst_type, bkey, user_id, lc_pair[0], lc_pair[1])
     tst_template.add_items_from_map(txt_map_li)
     g3r = db.ins_tst_tplate(tst_template)
@@ -529,6 +649,7 @@ def tst_new_qt(chat_id: int, tst_tplate: TstTplate, qt_str: str) -> TstTplateIt:
         # noinspection PyTypeChecker
         txt_seq = None
         txtlc_qt: Txtlc = find_or_ins_translation(qt_str, tst_tplate.lc_pair()).result.txtlc_src
+    # noinspection PyArgumentList
     tst_tplate_item: TstTplateIt = \
         TstTplateIt(tst_tplate, txt_seq, txtlc_qt, tst_tplate.nxt_num())
     return tst_tplate_item
@@ -549,3 +670,165 @@ def tst_tplate_it_ans_01(tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_
             return None, None
     tst_tplate_it_ans = tst_tplate_it.add_answer(txt_seq_it, txtlc_ans)
     return tst_tplate_it, tst_tplate_it_ans
+
+
+def tst_tplate_info(tst_tplate: TstTplate, f_trans=False, f_ans_shuffle=False) -> str:
+    reply_str = tst_tplate.label() + '\n\n'
+    ans_li: list[TstTplateItAns] = list[TstTplateItAns]()
+    for i in tst_tplate.it_li:
+        # noinspection PyTypeChecker
+        txtlc_mapping: TxtlcMp = None
+        if f_trans:
+            txtlc = i.txt_seq.txtlc_src if i.txt_seq else i.txtlc_qt
+            if txtlc:
+                txtlc_mapping = find_or_ins_translation(txtlc.txt, tst_tplate.lc_pair()).result
+        reply_str += i.label(txtlc_mapping) + '\n'
+        if f_ans_shuffle:
+            ans_li.extend(i.ans_li)
+        else:
+            for ans in i.ans_li:
+                # noinspection PyTypeChecker
+                txtlc_mapping = None
+                if f_trans:
+                    if ans.txtlc_src():
+                        txtlc_mapping = find_or_ins_translation(ans.txtlc_src().txt, tst_tplate.lc_pair()).result
+                reply_str += ans.label(txtlc_mapping)
+        reply_str += '\n\n'
+    if f_ans_shuffle:
+        reply_str += ', '.join([i.txtlc_src().txt for i in ans_li])
+    return reply_str
+
+
+def tst_run_by_setng(upd: Update) -> TstRun:
+    g3r = settings.ent_by_setng(
+        utilities.upd_extract_chat_user_id(upd), ELE_TY_tst_run_id,
+        db.sel_tst_run)
+    tst_run: TstRun = g3r.result
+    tst_run.propagate_tst_tplate(db.sel_tst_tplate(tst_run.tst_tplate.id_).result)
+    return tst_run
+
+
+def tst_run_to_setng(upd: Update, tst_run: TstRun) -> G3Result:
+    return settings.ent_to_setng(
+        utilities.upd_extract_chat_user_id(upd), tst_run)
+
+
+def tst_run_01(upd: Update, tst_tplate: TstTplate):
+    # noinspection PyArgumentList
+    tst_run: TstRun = TstRun(tst_tplate, *utilities.upd_extract_chat_user_id(upd))
+    tst_run = db.ins_tst_run(tst_run).result
+    tst_run_to_setng(upd, tst_run)
+    tst_run_tinfo(upd, tst_run)
+
+
+def tst_run_help(upd: Update, tst_run):
+    """Show help"""
+    col_li: list[TgColumn] = [
+        TgColumn('c1', -1, 'Command', 8),
+        TgColumn('c2', -1, 'Description', 50),
+    ]
+    hint_dct = {
+        1: {'c1': '...help ', 'c2': 'Show help                                         '},
+        2: {'c1': '...qnext', 'c2': 'Proceed to next question                          '},
+        3: {'c1': '...qprev', 'c2': 'Back to previous question                         '},
+        4: {'c1': '...qinfo', 'c2': 'Show current question                             '},
+        5: {'c1': '...qhint', 'c2': 'Show a random hint or hint %num%                  '},
+        6: {'c1': '...qansw', 'c2': 'Answer the question -> ...qansw %text%            '},
+        7: {'c1': '...tinfo', 'c2': 'Show current test                                 '},
+        8: {'c1': '...thint', 'c2': 'Show a random test hint or hint %num%             '},
+        9: {'c1': '...tfnsh', 'c2': 'Finish the test. Enforce by: -> ...tfnsh finish   '}
+    }
+    tbl_def = utilities.TableDef(col_li=col_li)
+    tg_reply.send_table(upd, tbl_def, hint_dct)
+    tst_run.act_add(ActTy.help)
+    db.ins_tst_run_act(tst_run)
+
+
+def tst_run_qans(upd: Update, tst_run: TstRun, tst_tplate_it_ans: TstTplateItAns, act_ty: ActTy):
+    if not tst_tplate_it_ans:
+        upd.effective_message.reply_html(f'No question found!',
+                                         reply_to_message_id=None)
+        return
+    info_str = i_tst_run_q_ans_info(tst_tplate_it_ans)
+    tg_reply.send(upd, info_str)
+    tst_run.ans_act_add(tst_tplate_it_ans, act_ty)
+    db.ins_tst_run_act(tst_run)
+
+
+def tst_run_qnext(upd: Update, tst_run: TstRun):
+    tst_tplate_it_ans = tst_run.ans_next()
+    tst_run_qans(upd, tst_run, tst_tplate_it_ans, ActTy.qnext)
+
+
+def tst_run_qprev(upd: Update, tst_run: TstRun):
+    tst_tplate_it_ans = tst_run.ans_prev()
+    tst_run_qans(upd, tst_run, tst_tplate_it_ans, ActTy.prev)
+
+
+def tst_run_qinfo(upd: Update, tst_run: TstRun):
+    tst_tplate_it_ans = tst_run.ans_current()
+    tst_run_qans(upd, tst_run, tst_tplate_it_ans, ActTy.qinfo)
+
+
+def tst_run_qhint(upd: Update, tst_run: TstRun):
+    tst_tplate_it_ans = tst_run.ans_current()
+    tst_tplate_it = tst_tplate_it_ans.tst_tplate_it
+    g3r = find_or_ins_translation(
+        tst_tplate_it.text(), tst_run.tst_tplate.lc_pair()
+    )
+    all_ans_li = tst_run.tst_tplate.all_ans_li()
+    shuffle(all_ans_li)
+    send_str = tst_tplate_it.label(g3r.result) + '\n\n'
+    send_str += ', '.join([i.txtlc_src().txt for i in all_ans_li])
+    tg_reply.send(upd, send_str)
+    tst_run.ans_act_add(tst_tplate_it_ans, ActTy.qhint)
+    db.ins_tst_run_act(tst_run)
+
+
+def tst_run_qansw(upd: Update, tst_run: TstRun, text: str):
+    tst_tplate_it_ans = tst_run.ans_current()
+
+    sus: Sus
+    if text == tst_tplate_it_ans.txtlc.txt:
+        sus = Sus.sccs
+    else:
+        sus = Sus.fail
+
+    tg_reply.send(upd, str(sus))
+    tst_run.ans_act_sus_add(tst_tplate_it_ans, ActTy.qansw, sus)
+    db.ins_tst_run_act(tst_run)
+
+    if sus == Sus.sccs:
+        tst_run = tst_run_by_setng(upd)
+        tst_run_qnext(upd, tst_run)
+
+
+def tst_run_tinfo(upd: Update, tst_run: TstRun):
+    tinfo_str = tst_tplate_info(tst_run.tst_tplate, f_trans=False, f_ans_shuffle=True)
+    tg_reply.reply(upd, tinfo_str)
+    tst_run.act_add(ActTy.tinfo)
+    db.ins_tst_run_act(tst_run)
+
+
+def tst_run_thint(upd: Update, tst_run: TstRun):
+    tst_tplate = tst_run.tst_tplate
+    col_li: list[TgColumn] = [
+        TgColumn('lc', -1, tst_tplate.lc.value, 22),
+        TgColumn('lc2', -1, tst_tplate.lc2.value, 22),
+    ]
+    ans_li: list[TstTplateItAns] = tst_tplate.all_ans_li()
+    shuffle(ans_li)
+    row_dct_li: list[dict[str, str]] = []
+    for ans in ans_li:
+        txtlc_mp = find_or_ins_translation(ans.txtlc_src().txt, tst_tplate.lc_pair()).result
+        row_dct_li.append({'lc': txtlc_mp.txtlc_src.txt, 'lc2': txtlc_mp.txtlc_trg.txt})
+    tg_reply.send_table(upd, TableDef(col_li), row_dct_li)
+    tst_run.act_add(ActTy.thint)
+    db.ins_tst_run_act(tst_run)
+
+
+def tst_run_tfnsh(upd: Update, tst_run: TstRun):
+    tst_run.act_add(ActTy.tfnsh)
+    db.upd_tst_run__end(tst_run)
+    tst_run = db.sel_tst_run(tst_run.id_).result
+    tg_reply.send(upd, f'Start: {tst_run.sta_tst}\nEnd: {tst_run.end_tst}')

@@ -5,7 +5,7 @@ from telegram.ext import CallbackContext
 
 import generic_hdl
 import tg_reply
-from entities import Entity
+from entities import EntTy
 from g3b1_data import settings, tg_db
 from g3b1_data.elements import ELE_TY_cmd, ELE_TY_cmd_prefix
 from g3b1_log.g3b1_log import cfg_logger
@@ -88,7 +88,7 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
         elif test_if_cmd.endswith('33'):
             # list
             ent_str = test_if_cmd[:-3]
-            ent_ty = Entity.by_id(ent_str)
+            ent_ty = EntTy.by_id(ent_str)
             if ent_ty:
                 # Generic list command on entity of type ent_ty
                 generic_hdl.cmd_ent_ty_33_li(upd, ctx, ent_ty=ent_ty)

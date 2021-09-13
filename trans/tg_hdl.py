@@ -1,19 +1,24 @@
 """Trans commands """
 from builtins import int
-from typing import Optional
 
-from telegram import Update
+from telegram import Update, Message
 from telegram.ext import CallbackContext
 
 import trans
 import trans.data
-from data.model import TstTplate
+from data.model import TxtSeq, TstRun
+from g3b1_log.g3b1_log import *
 from g3b1_serv import utilities, tgdata_main
-from serv.services import hdl_cmd_languages, i_cmd_lc, i_cmd_lc2, i_cmd_lc_view, hdl_cmd_setng_cmd_prefix
+from generic_mdl import TgColumn
+from model import g3_m_dct
+from serv.services import hdl_cmd_languages, i_cmd_lc, i_cmd_lc2, i_cmd_lc_view, hdl_cmd_setng_cmd_prefix, \
+    i_execute_split_and_send, i_tst_qt_mode_edit, i_tst_ans_mode_edit, i_tst_ans_mode_exe
 from subscribe.data import db as subscribe_db
 from subscribe.serv import services as subscribe_services
 from subscribe.serv.services import for_user
+from tg_reply import bold
 from trans.serv import internal
+from trans.serv import services
 from trans.serv.internal import *
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
@@ -455,38 +460,25 @@ def cmd_tst_tplate_03(upd: Update, chat_id: int, user_id: int, bkey: str):
         tst_tplate = internal.i_tst_tplate_by_setng(chat_id, user_id)
     else:
         g3r = db.sel_tst_tplate__bk(bkey)
-        if g3r.result != 0:
+        if g3r.retco != 0:
             tg_reply.cmd_err(upd)
+            return
         tst_tplate = g3r.result
 
-    reply_str = tst_tplate.label() + '\n\n'
-    for i in tst_tplate.it_li:
-        # noinspection PyTypeChecker
-        txtlc_mapping: TxtlcMp = None
-        txtlc = i.txt_seq.txtlc_src if i.txt_seq else i.txtlc_qt
-        if txtlc:
-            txtlc_mapping = services.find_or_ins_translation(txtlc.txt, tst_tplate.lc_pair()).result
-        reply_str += i.label(txtlc_mapping) + '\n'
-        for ans in i.ans_li:
-            # noinspection PyTypeChecker
-            txtlc_mapping = None
-            txtlc_ans = ans.txt_seq_it.txtlc_trg if ans.txt_seq_it else ans.txtlc
-            if txtlc_ans:
-                txtlc_mapping = services.find_or_ins_translation(txtlc_ans.txt, tst_tplate.lc_pair()).result
-            reply_str += ans.label(txtlc_mapping)
-        reply_str += '\n\n'
+    reply_str = services.tst_tplate_info(tst_tplate, f_trans=True)
 
     tg_reply.reply(upd, reply_str)
+    for i in tst_tplate.all_ans_li():
+        print(i.txtlc_src().txt)
 
 
 @tgdata_main.tg_handler()
 def cmd_tst_tplate_del(upd: Update, bkey: str):
     """Delete tplate by bkey"""
-    tst_tplate = i_sel_tst_tplate_bk(bkey)
-    if not tst_tplate:
+    if not (tst_tplate := i_sel_tst_tplate_bk(upd, bkey)):
         return
     g3r = db.tst_tplate_del(tst_tplate)
-    utilities.hdl_retco(upd, logger, g3r.retco)
+    tg_reply.hdl_retco(upd, logger, g3r)
 
 
 @tgdata_main.tg_handler()
@@ -511,7 +503,7 @@ def cmd_tst_tplate_qt(upd: Update, ctx: CallbackContext, chat_id: int, user_id: 
             return
         internal.i_tst_qt_mode_exe(upd, tst_template, tst_tplate_item)
     elif tst_mode == 2:
-        internal.i_tst_qt_mode_edit(upd, chat_id, user_id, tst_template, qt_str)
+        i_tst_qt_mode_edit(upd, chat_id, user_id, tst_template, qt_str)
         cmd_tst_tplate_help(upd, ctx)
 
 
@@ -545,7 +537,7 @@ def cmd_tst_tplate_ans(upd: Update, ctx: CallbackContext, chat_id: int, user_id:
 
     tst_mode = g3r.result
     if tst_mode == 1:
-        tst_tplate_it_next = internal.i_tst_ans_mode_exe(upd, tst_tplate, tst_tplate_it, ans_str)
+        tst_tplate_it_next = i_tst_ans_mode_exe(upd, tst_tplate, tst_tplate_it, ans_str)
 
         ele_val: str
         if tst_tplate_it_next:
@@ -554,7 +546,7 @@ def cmd_tst_tplate_ans(upd: Update, ctx: CallbackContext, chat_id: int, user_id:
             ele_val = 'None'
         db.iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, ele_val))
     elif tst_mode == 2:
-        internal.i_tst_ans_mode_edit(upd, tst_tplate, tst_tplate_it, ans_str)
+        i_tst_ans_mode_edit(upd, tst_tplate, tst_tplate_it, ans_str)
         cmd_tst_tplate_help(upd, ctx)
 
 
@@ -643,11 +635,72 @@ def cmd_telex(upd: Update):
 
 
 @tgdata_main.tg_handler()
-def cmd_tst_run_01(upd: Update, chat_id: int, user_id: int, bkey: str):
+def cmd_tst_run_01(upd: Update, bkey: str):
     """Run a test as student"""
-    tst_tplate: Optional[TstTplate] = i_sel_tst_tplate_bk(bkey)
-    if not tst_tplate:
+    if not (tst_tplate := i_sel_tst_tplate_bk(upd, bkey)):
         return
     hdl_cmd_setng_cmd_prefix(upd, '.tst.run.')
+    services.tst_run_01(upd, tst_tplate)
 
-    pass
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_help(upd: Update):
+    """Show help"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_help(upd, tst_run)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_qnext(upd: Update):
+    """Show next test question"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_qnext(upd, tst_run)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_qprev(upd: Update):
+    """Show previous test question"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_qprev(upd, tst_run)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_qinfo(upd: Update):
+    """Show test question info"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_qinfo(upd, tst_run)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_qhint(upd: Update):
+    """Show test question hint"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_qhint(upd, tst_run)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_qansw(upd: Update, text: str):
+    """Answer the current question"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_qansw(upd, tst_run, text)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_tinfo(upd: Update):
+    """Show current test info"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_tinfo(upd, tst_run)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_thint(upd: Update, tst_run: TstRun):
+    """Show current test hint"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_thint(upd, tst_run)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_run_tfnsh(upd: Update, tst_run: TstRun, text: str):
+    """Finish current test"""
+    tst_run: TstRun = services.tst_run_by_setng(upd)
+    services.tst_run_tfnsh(upd, tst_run)

@@ -1,12 +1,15 @@
 from builtins import enumerate
-from enum import Enum
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 from sqlalchemy.engine import Row
 
-from elements import *
-from entities import Entity, ENT_TY_tst_tplate, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate_it, \
-    ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp, ENT_TY_txtlc_onym, ENT_TY_txtlc
+from elements import EleVal, ELE_TY_bkey, ELE_TY_tst_type, ELE_TY_user_id, ELE_TY_lc, ELE_TY_lc2
+from entities import EntTy, ENT_TY_tst_tplate, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate_it, \
+    ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp, ENT_TY_txtlc_onym, ENT_TY_txtlc, ENT_TY_tst_run, \
+    ENT_TY_tst_run_act_sus, ENT_TY_tst_run_act
 from g3b1_serv.tg_reply import bold, italic
+from trans.data.enums import Lc, ActTy, Sus
 
 
 def user_settings(user_id: int, lc: str = None, lc2: str = None) -> dict[str, str]:
@@ -33,42 +36,6 @@ class TransSqlDictFactory(dict):
         return super().__new__(cls, new_kv_li, **kwargs)
 
 
-class Lc(Enum):
-    # Never change this order
-    # When adding new entries, please make sure that EN stays at the bottom.
-    # After all I am writing all comments in EN: isn't that honour enough?
-    TR = 'TR'  # There are people who can whistle in Turkish, I hope I can visit that village before
-    # some billionaire discovers it and turns it into another Disney Land for whatever reason
-    RU = 'RU'  # Did you know: an influential business man is called oligarch in Russia and philanthropist in US
-    DE = 'DE'
-    VI = 'VI'
-    VN = 'VI'
-    LA = 'LA'
-    IT = 'IT'
-    ES = 'ES'
-    FR = 'FR'
-    EN = 'EN'
-
-    @staticmethod
-    def to_str_pair(lc_pair: tuple["Lc", "Lc"]) -> tuple[str, str]:
-        return lc_pair[0].value, lc_pair[1].value
-
-    @staticmethod
-    def from_str_pair(lc_pair: tuple[str, str]) -> tuple["Lc", "Lc"]:
-        return Lc.find_lc(lc_pair[0]), Lc.find_lc(lc_pair[1])
-
-    @staticmethod
-    def find_lc(lc_str: str) -> "Lc":
-        if not lc_str:
-            # noinspection PyTypeChecker
-            return None
-        for k, lc in Lc.__members__.items():
-            if k == lc_str:
-                return lc
-        # noinspection PyTypeChecker
-        return None
-
-
 @dataclass
 class Txtlc:
     txt: str = ''
@@ -82,7 +49,7 @@ class Txtlc:
     # They wanted me also to sell the software.
     # And I wondered why the heck am I an employee?
     @staticmethod
-    def ent_ty() -> Entity:
+    def ent_ty() -> EntTy:
         return ENT_TY_txtlc
 
     @staticmethod
@@ -107,7 +74,7 @@ class TxtlcOnym:
     lc: Lc = field(init=False)
 
     @staticmethod
-    def ent_ty() -> Entity:
+    def ent_ty() -> EntTy:
         return ENT_TY_txtlc_onym
 
     def __post_init__(self):
@@ -129,7 +96,7 @@ class TxtlcMp:
     score: int = 10
 
     @staticmethod
-    def ent_ty() -> Entity:
+    def ent_ty() -> EntTy:
         return ENT_TY_txtlc_mp
 
 
@@ -142,7 +109,7 @@ class TstTplateItAns:
     id_: int = None
 
     @staticmethod
-    def ent_ty() -> Entity:
+    def ent_ty() -> EntTy:
         return ENT_TY_tst_tplate_it_ans
 
     # noinspection PyMethodMayBeStatic
@@ -176,7 +143,7 @@ class TstTplateIt:
     id_: int = None
 
     @staticmethod
-    def ent_ty() -> Entity:
+    def ent_ty() -> EntTy:
         return ENT_TY_tst_tplate_it
 
     def __post_init__(self) -> None:
@@ -243,7 +210,7 @@ class TstTplate:
                          row['descr'], row['id'])
 
     @staticmethod
-    def ent_ty() -> Entity:
+    def ent_ty() -> EntTy:
         return ENT_TY_tst_tplate
 
     def cascade(self) -> list:
@@ -275,6 +242,10 @@ class TstTplate:
             # noinspection PyTypeChecker
             item.add_answer(None, txt_map.txtlc_trg)
             self.it_li.append(item)
+
+    def all_ans_li(self) -> list[TstTplateItAns]:
+        all_ans_li: list[TstTplateItAns] = [ans for it in self.it_li for ans in it.ans_li]
+        return all_ans_li
 
     def nxt_ans_num(self) -> int:
         nxt_ans_num: int = 1
@@ -365,29 +336,129 @@ class TstTplate_:
 @dataclass
 class TstRun:
     tst_tplate: TstTplate
-    user_id: int
     chat_id: int
-    str_tst: str = None
+    user_id: int
+    sta_tst: str = None
     end_tst: str = None
     id_: int = None
-    it_li: list[TstTplateIt] = field(init=False)
+    it_li: list["TstRunAct"] = field(init=False)
+
+    @staticmethod
+    def ent_ty() -> EntTy:
+        return ENT_TY_tst_run
 
     def __post_init__(self) -> None:
         self.it_li = []
+
+    def propagate_tst_tplate(self, tst_tplate: TstTplate) -> None:
+        self.tst_tplate = tst_tplate
+        all_ans_li: list[TstTplateItAns] = tst_tplate.all_ans_li()
+        for i in self.it_li:
+            i.propagate_ans(all_ans_li)
+
+    def act_add(self, act_ty: ActTy):
+        # noinspection PyArgumentList,PyTypeChecker
+        self.it_li.append(TstRunAct(self, None, act_ty))
+
+    def act_last(self) -> Optional["TstRunAct"]:
+        li_len = len(self.it_li)
+        if li_len == 0:
+            return
+        return self.it_li[li_len - 1]
+
+    def ans_act_add(self, tst_tplate_it_ans: TstTplateItAns, act_ty: ActTy):
+        # noinspection PyArgumentList
+        self.it_li.append(TstRunAct(self, tst_tplate_it_ans, act_ty))
+
+    def ans_act_sus_add(self, tst_tplate_it_ans: TstTplateItAns, act_ty: ActTy, sus: Sus):
+        # noinspection PyArgumentList
+        tst_run_act = TstRunAct(self, tst_tplate_it_ans, act_ty)
+        tst_run_act.ans_sus_add(sus)
+        self.it_li.append(tst_run_act)
+
+    def ans_first(self) -> Optional[TstTplateItAns]:
+        all_ans_li = self.tst_tplate.all_ans_li()
+        if not all_ans_li:
+            return
+        return all_ans_li[0]
+
+    def ans_current(self) -> Optional[TstTplateItAns]:
+        for i in reversed(self.it_li):
+            if i.tst_tplate_it_ans:
+                return i.tst_tplate_it_ans
+        return self.ans_first()
+
+    def ans_next(self) -> Optional[TstTplateItAns]:
+        if not (tst_tplate_it_ans := self.ans_current()):
+            return
+
+        all_ans_li = self.tst_tplate.all_ans_li()
+        next_idx = all_ans_li.index(tst_tplate_it_ans) + 1
+        if next_idx == len(all_ans_li):
+            return all_ans_li[0]
+
+        return all_ans_li[next_idx]
+
+    def ans_prev(self) -> Optional[TstTplateItAns]:
+        if not (tst_tplate_it_ans := self.ans_current()):
+            return
+
+        all_ans_li = self.tst_tplate.all_ans_li()
+        prev_idx = all_ans_li.index(tst_tplate_it_ans) - 1
+        if prev_idx == -1:
+            return all_ans_li[len(all_ans_li) - 1]
+
+        return all_ans_li[prev_idx]
 
 
 @dataclass
 class TstRunAct:
-    tst_tplate: TstTplate
-    user_id: int
-    chat_id: int
-    str_tst: str = None
-    end_tst: str = None
+    tst_run: TstRun
+    tst_tplate_it_ans: TstTplateItAns
+    act_ty: ActTy
+    act_tst: str = None
+    txt: str = None
     id_: int = None
-    it_li: list[TstTplateIt] = field(init=False)
+    it_li: list["TstRunActSus"] = field(init=False)
+
+    @staticmethod
+    def ent_ty() -> EntTy:
+        return ENT_TY_tst_run_act
 
     def __post_init__(self) -> None:
         self.it_li = []
+
+    def propagate_ans(self, tst_tplate_it_ans_li: list[TstTplateItAns]):
+        if not self.tst_tplate_it_ans:
+            return
+        if isinstance(self.tst_tplate_it_ans, int):
+            ans_id: int = self.tst_tplate_it_ans
+        else:
+            ans_id: int = self.tst_tplate_it_ans.id_
+        self.tst_tplate_it_ans = [ans for ans in tst_tplate_it_ans_li if ans.id_ == ans_id][0]
+        for i in self.it_li:
+            i.tst_tplate_it_ans = self.tst_tplate_it_ans
+
+    def ans_sus_add(self, sus: Sus) -> "TstRunActSus":
+        tst_run_act_sus = TstRunActSus(self, sus)
+        self.it_li.append(tst_run_act_sus)
+        return tst_run_act_sus
+
+
+@dataclass
+class TstRunActSus:
+    tst_run_act: TstRunAct
+    sus: Sus
+    tst_tplate_it_ans: TstTplateItAns = None
+    id_: int = None
+
+    @staticmethod
+    def ent_ty() -> EntTy:
+        return ENT_TY_tst_run_act_sus
+
+    def __post_init__(self) -> None:
+        if not self.tst_tplate_it_ans:
+            self.tst_tplate_it_ans = self.tst_run_act.tst_tplate_it_ans
 
 
 @dataclass
@@ -398,7 +469,7 @@ class TxtSeqIt:
     id_: int = None
 
     @staticmethod
-    def ent_ty() -> Entity:
+    def ent_ty() -> EntTy:
         return ENT_TY_txt_seq_it
 
 
@@ -411,7 +482,7 @@ class TxtSeq:
     it_li: list[TxtSeqIt] = field(init=False)
 
     @staticmethod
-    def ent_ty() -> Entity:
+    def ent_ty() -> EntTy:
         return ENT_TY_txt_seq
 
     def __post_init__(self) -> None:

@@ -13,11 +13,13 @@ tg_user_id: int = 1749165037
 
 
 def c(msg: str):
+    print(str(f'\n\n>>>{msg}\n'))
     dispatcher: Dispatcher = test_utils.setup(tg_hdl.__file__)
     user: User = User(tg_user_id, 'Gunnar', False)
     chat: Chat = Chat(tg_chat_id, constants.CHAT_GROUP)
 
     msg_callback = test_utils.MsgCallback()
+    msg_callback.msg_li = []
     ext_id = tg_db.next_negative_ext_id(tg_chat_id, tg_user_id).result
     message = test_utils.MyMessage(ext_id, datetime.now(),
                                    chat=chat, from_user=user, reply_to_message=None)

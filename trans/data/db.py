@@ -7,21 +7,22 @@ from sqlalchemy import Table, select, desc, update, delete, and_, or_, asc, text
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import LegacyCursorResult, Result, Row
 from sqlalchemy.engine.mock import MockConnection
-from sqlalchemy.sql import Select, ColumnCollection
+from sqlalchemy.sql import Select, ColumnCollection, Update
 
 import g3b1_data.db
 import integrity
 import trans.data
+import utilities
 from entities import ENT_TY_txtlc, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, \
     ENT_TY_tst_tplate_it_ans
-from trans.data.sqlalchemy import pop_only_dc_fields, replace_lcs
 from g3b1_data import settings
-from g3b1_data.elements import ELE_TY_chat_id, ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id
+from g3b1_data.elements import ELE_TY_chat_id, ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id, Element
 from g3b1_data.model import G3Result
 from g3b1_log.g3b1_log import cfg_logger
 from trans.data import model, MetaData_TRANS, Engine_TRANS, sqlalchemy
 from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TxtSeqIt, TstTplate, TstTplateIt, \
-    TstTplateItAns, Lc, TransSqlDictFactory
+    TstTplateItAns, Lc, TstRun, TstRunAct, TstRunActSus
+from trans.data.sqlalchemy import pop_only_dc_fields, replace_lcs
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
@@ -140,10 +141,11 @@ def li_onym_by_txtlc(txtlc: Txtlc, src_and_trg: bool = True) -> \
     def convert_results(g3_res: list[namedtuple]) -> list[TxtlcOnym]:
         res_li: list[TxtlcOnym] = []
         for i in g3_res:
-            # noinspection PyTypeChecker
+            # noinspection PyTypeChecker,PyArgumentList
             txtlc_src = fiby_txt_lc(Txtlc('', None, i['src__txtlc_id'])).result
-            # noinspection PyTypeChecker
+            # noinspection PyTypeChecker,PyArgumentList
             txtlc_trg = fiby_txt_lc(Txtlc('', None, i['trg__txtlc_id'])).result
+            # noinspection PyArgumentList
             txt_lc_onym = TxtlcOnym(txtlc_src, txtlc_trg, i['creator'], i['onym_ty'], i['id'])
             res_li.append(txt_lc_onym)
         return res_li
@@ -378,29 +380,33 @@ def sel_tst_tplate(tst_tplate_id: int) -> G3Result[TstTplate]:
         row = rs.first()
         if not row:
             return G3Result(4)
-        tst_tplate = sqlalchemy.tst_tplate_from_row(row)
+
+        tst_tplate = sqlalchemy.from_row_tst_tplate(row)
         tbl_it: Table = MetaData_TRANS.tables['tst_tplate_it']
-        stmnt = select(tbl_it).where(tbl_it.columns['tst_tplate_id'] == tst_tplate_id).\
+        stmnt = select(tbl_it).where(tbl_it.columns['tst_tplate_id'] == tst_tplate_id). \
             order_by(asc(tbl_it.columns['itnum']))
         rs = con.execute(stmnt)
-        rows = rs.fetchall()
-        for it_row in rows:
+        rows_it = rs.fetchall()
+
+        for row_it in rows_it:
             repl_dct: dict[str, Any] = {'tst_tplate_id': tst_tplate}
-            repl_dct = sqlalchemy.orm(con, tbl_it, it_row, repl_dct)
-            tst_tplate_it: TstTplateIt = sqlalchemy.tst_tplate_it_from_row(it_row, repl_dct)
+            repl_dct = sqlalchemy.orm(con, tbl_it, row_it, repl_dct)
+            tst_tplate_it: TstTplateIt = sqlalchemy.from_row_tst_tplate_it(row_it, repl_dct)
             tst_tplate.it_li.append(tst_tplate_it)
+
             # Now the answers
             tbl_it_ans: Table = MetaData_TRANS.tables['tst_tplate_it_ans']
             stmnt = select(tbl_it_ans).where(tbl_it_ans.columns['tst_tplate_it_id'] == tst_tplate_it.id_). \
                 order_by(asc(tbl_it_ans.columns['ans_num']))
             rs = con.execute(stmnt)
-            rows = rs.fetchall()
-            for it_ans_row in rows:
+            rows_it_it = rs.fetchall()
+            for row_it_it in rows_it_it:
                 repl_dct: dict[str, Any] = {'tst_tplate_it_id': tst_tplate_it}
-                repl_dct = sqlalchemy.orm(con, tbl_it_ans, it_ans_row, repl_dct)
+                repl_dct = sqlalchemy.orm(con, tbl_it_ans, row_it_it, repl_dct)
                 tst_tplate_it_ans: TstTplateItAns = \
-                    sqlalchemy.tst_tplate_it_ans_from_row(it_ans_row, repl_dct)
+                    sqlalchemy.from_row_tst_tplate_it_ans(row_it_it, repl_dct)
                 tst_tplate_it.ans_li.append(tst_tplate_it_ans)
+
         return G3Result(0, tst_tplate)
 
 
@@ -414,7 +420,7 @@ def sel_tst_tplate__bk(bkey: str) -> G3Result[TstTplate]:
         row: Row = rs.first()
         if not row:
             return G3Result(4)
-        tst_tplate = sqlalchemy.tst_tplate_from_row(row)
+        tst_tplate = sqlalchemy.from_row_tst_tplate(row)
         return sel_tst_tplate(tst_tplate.id_)
 
 
@@ -537,7 +543,6 @@ def upd_tst_template_lc_pair(tst_tplate_id: int, lc_tup: tuple[Lc, Lc]) -> \
 
 
 def tst_tplate_refs(tst_tplate: TstTplate, con_: MockConnection = None) -> list[dict[str, ...]]:
-
     def core_tst_tplate_refs(con: MockConnection) -> list[dict[str, ...]]:
         tbl: Table = MetaData_TRANS.tables[ENT_TY_tst_tplate.tbl_name]
         tbl_it: Table = MetaData_TRANS.tables[ENT_TY_tst_tplate_it.tbl_name]
@@ -568,20 +573,167 @@ def tst_tplate_del(tst_tplate: TstTplate) -> G3Result:
 
         # References from settings table
         tbl_li: list[Table] = integrity.ref_cascade(tst_tplate)
-        if [tbl for tbl in tbl_li if tbl not in [tbl, tbl_it, tbl_it_ans]]:
+        tbl_ref_li = [i for i in tbl_li if i not in [tbl, tbl_it, tbl_it_ans]]
+        if tbl_ref_li:
             return G3Result(4)
 
-        ans_id_li = [it_ans.id_ for it in tst_tplate.it_li for it_ans in it.ans_li ]
-        if ans_id_li:
-            stmnt: delete = delete(tbl_it_ans).where(tbl_it_ans.columns.id.in_(ans_id_li))
-            con.execute(stmnt)
-
-        it_id_li = [it.id_ for it in tst_tplate.it_li]
-        if it_id_li:
-            stmnt: delete = delete(tbl_it).where(tbl_it.columns.id.in_(it_id_li))
-            con.execute(stmnt)
+        # ans_id_li = [it_ans.id_ for it in tst_tplate.it_li for it_ans in it.ans_li]
+        # if ans_id_li:
+        #     stmnt: delete = delete(tbl_it_ans).where(tbl_it_ans.columns.id.in_(ans_id_li))
+        #     con.execute(stmnt)
+        #
+        # it_id_li = [it.id_ for it in tst_tplate.it_li]
+        # if it_id_li:
+        #     stmnt: delete = delete(tbl_it).where(tbl_it.columns.id.in_(it_id_li))
+        #     con.execute(stmnt)
 
         stmnt: delete = delete(tbl).where(tbl.columns.id.in_([tst_tplate.id_]))
         con.execute(stmnt)
 
     return G3Result(0, None)
+
+
+def ins_tst_run(tst_run: TstRun) -> G3Result[TstRun]:
+    """Ins tst_run"""
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl: Table = MetaData_TRANS.tables['tst_run']
+        values = {
+            'tst_tplate_id': tst_run.tst_tplate.id_,
+            'tg_chat_id': tst_run.chat_id,
+            'tg_user_id': tst_run.user_id
+        }
+        insert_stmnt: insert = insert(tbl).values(
+            values
+        )
+        rs = con.execute(insert_stmnt)
+        if rs.rowcount != 1:
+            return G3Result(4)
+        rowid = rs.lastrowid
+        id_ = 0
+        if rowid:
+            rs = con.execute(f"SELECT ROWID, * FROM {tbl.name} WHERE ROWID=:rowid", rowid=rowid)
+            id_ = int(rs.first()['id'])
+        tst_run.id_ = id_
+    return G3Result(0, tst_run)
+
+
+def ins_tst_run_act(tst_run: TstRun, con_: MockConnection = None) -> G3Result[TstRun]:
+    """Ins 1 ...act and n ...act_sus"""
+    if not (tst_run_act := tst_run.act_last()):
+        return G3Result(4)
+
+    def wrapped(con: MockConnection) -> G3Result[TstRun]:
+        tbl: Table = MetaData_TRANS.tables['tst_run_act']
+        val_dct = {'act_ty': tst_run_act.act_ty.value, 'txt': tst_run_act.txt, 'tst_run_id': tst_run.id_}
+        if tst_run_act.tst_tplate_it_ans:
+            val_dct['tst_tplate_it_ans_id'] = tst_run_act.tst_tplate_it_ans.id_
+        insert_stmnt: insert = insert(tbl).values(
+            val_dct
+        )
+        rs = con.execute(insert_stmnt)
+        if rs.rowcount != 1:
+            return G3Result(4)
+        rowid = rs.lastrowid
+        id_ = 0
+        if rowid:
+            rs = con.execute(f"SELECT ROWID, * FROM {tbl.name} WHERE ROWID=:rowid", rowid=rowid)
+            id_ = int(rs.first()['id'])
+        tst_run_act.id_ = id_
+
+        tbl_it: Table = MetaData_TRANS.tables['tst_run_act_sus']
+        for it_row in tst_run_act.it_li:
+            it_val_dct = {'tst_run_act_id': tst_run_act.id_,
+                          'tst_tplate_it_ans_id': tst_run_act.tst_tplate_it_ans.id_,
+                          'sus_bkey': it_row.sus.value}
+            stmnt: insert = insert(tbl_it).values(
+                it_val_dct
+            )
+            rs = con.execute(stmnt)
+            if rs.rowcount != 1:
+                return G3Result(4)
+            rowid = rs.lastrowid
+            id_ = 0
+            if rowid:
+                rs = con.execute(f"SELECT ROWID, * FROM {tbl_it.name} WHERE ROWID=:rowid", rowid=rowid)
+                id_ = int(rs.first()['id'])
+            it_row.id_ = id_
+
+        return G3Result(0, tst_run)
+
+    if con_:
+        return wrapped(con_)
+    else:
+        with Engine_TRANS.connect() as con_:
+            return wrapped(con_)
+
+
+def upd_tst_run__end(tst_run: TstRun) -> G3Result[TstRun]:
+    """Set end_tst and ins 1 ...act and n ...act_sus"""
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl: Table = MetaData_TRANS.tables['tst_run']
+        tst_run.end_tst = utilities.tst_for_sql()
+        values = {'end_tst': tst_run.end_tst}
+        c = tbl.columns
+        stmnt: Update = (update(tbl).
+                         where(c.id == tst_run.id_).
+                         values(values)
+                        )
+        rs = con.execute(stmnt)
+        if rs.rowcount != 1:
+            return G3Result(4)
+
+        return ins_tst_run_act(tst_run, con)
+
+
+def sel_tst_run(id_: int) -> G3Result[TstRun]:
+    """Sel tst_run"""
+    ent: TstRun
+    ent_ty = TstRun.ent_ty()
+    tbl_name = ent_ty.tbl_name
+    element = Element.by_ent_ty(ent_ty)
+    con: MockConnection
+    with Engine_TRANS.connect() as con:
+        tbl: Table = MetaData_TRANS.tables[tbl_name]
+        stmnt = select(tbl).where(tbl.columns['id'] == id_)
+        rs = con.execute(stmnt)
+        logger.debug(stmnt)
+        row = rs.first()
+        if not row:
+            return G3Result(4)
+        repl_dct: dict[str, Any] = {}
+        repl_dct = sqlalchemy.orm(con, tbl, row, repl_dct)
+        ent = sqlalchemy.from_row_tst_run(row, repl_dct)
+
+        # items
+        # 1st level
+        tbl_it: Table = MetaData_TRANS.tables['tst_run_act']
+        stmnt = select(tbl_it).where(tbl_it.columns[element.id_] == ent.id_). \
+            order_by(asc(tbl_it.columns['act_tst']))
+        rs = con.execute(stmnt)
+        rows_it = rs.fetchall()
+        # orm
+        for row_it in rows_it:
+            repl_dct: dict[str, Any] = {element.id_: ent}
+            repl_dct = sqlalchemy.orm(con, tbl_it, row_it, repl_dct)
+            ent_it: TstRunAct = sqlalchemy.from_row_tst_run_act(row_it, repl_dct)
+            ent.it_li.append(ent_it)
+
+            # items
+            # 2nd level
+            ent_it_ty = ent_it.ent_ty()
+            element_it = Element.by_ent_ty(ent_it_ty)
+            tbl_it_it: Table = MetaData_TRANS.tables['tst_run_act_sus']
+            stmnt = select(tbl_it_it).where(tbl_it_it.columns[element_it.id_] == ent_it.id_)
+            rs = con.execute(stmnt)
+            rows_it_it = rs.fetchall()
+            # orm
+            for row_it_it in rows_it_it:
+                repl_dct: dict[str, Any] = {element_it.id_: ent_it}
+                repl_dct = sqlalchemy.orm(con, tbl_it_it, row_it_it, repl_dct)
+                ent_it_it: TstRunActSus = \
+                    sqlalchemy.from_row_tst_run_act_sus(row_it_it, repl_dct)
+                ent_it.it_li.append(ent_it_it)
+        return G3Result(0, ent)
+
