@@ -5,15 +5,17 @@ from telegram import ParseMode, Message
 
 import tg_db
 import trans.data
-from g3b1_log.g3b1_log import *
+from g3b1_log.log import *
 from g3b1_serv import utilities
 from generic_mdl import TgColumn, TableDef
 from subscribe.data import db as subscribe_db
 from subscribe.serv.services import for_user
 from tg_reply import bold, cmd_err
 from trans.data.enums import ActTy, Sus
-from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TstRun
+from trans.data.model import TxtSeq
+from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TstRun, TxtSeqIt
 from trans.serv.internal import *
+from utilities import upd_extract_chat_user_id
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
@@ -45,7 +47,7 @@ def find_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) -> TxtlcM
     if not txtlc_find:
         # noinspection PyTypeChecker,PyArgumentList
         return TxtlcMp(None, None, lc2)
-    txt_mapping: TxtlcMp = db.fi_txt_mapping(txtlc_find, lc2, translator).result  # -> TxtLCMapping
+    txt_mapping: TxtlcMp = db.fin_txtlc_mp(txtlc_find, lc2, translator).result  # -> TxtLCMapping
     if not txt_mapping:
         # noinspection PyTypeChecker,PyArgumentList
         txt_mapping = TxtlcMp(txtlc_find, None, lc2)
@@ -95,7 +97,7 @@ def set_trg_of_map_and_save(txt_mapping: TxtlcMp, txt) -> G3Result:
         # noinspection PyArgumentList
         txtlc_find = db.ins_txtlc(Txtlc(txt, txt_mapping.lc2)).result
     txt_mapping.txtlc_trg = txtlc_find
-    g3r: G3Result = db.iup_txt_mapping(txt_mapping)
+    g3r: G3Result = db.iup_txtlc_mp(txt_mapping)
     return g3r
 
 
@@ -120,60 +122,32 @@ def translate_google(text: str, lc_str, lc2_str) -> str:
     return result["translatedText"]
 
 
-def i_tst_ans_mode_edit(upd: Update, tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str):
-    """Add answer to the current item"""
-    tst_tplate_it, tst_tplate_it_ans = tst_tplate_it_ans_01(tst_tplate, tst_tplate_it, ans_str)
-    if not tst_tplate_it:
-        tg_reply.cmd_err(upd)
-        upd.effective_message.reply_html(f'Does the answer already exist for the question of the current tst_item?')
-        return
-    db.iup_tst_tplate_it_ans(tst_tplate_it, tst_tplate_it_ans)
+def txt_seq_01(upd: Update, lc_pair: tuple[Lc, Lc], txt: str) -> TxtSeq:
+    chat_id, user_id = upd_extract_chat_user_id(upd)
+
+    txt_seq: TxtSeq = TxtSeq.new(user_id, txt, lc_pair)
+
+    txt_it_li = txt.split('|')
+    src_txt = ''
+    for idx, txt_it in enumerate(txt_it_li):
+        src_txt += txt_it + ' '
+        txtlc_mp: TxtlcMp = find_or_ins_translation(txt_it, lc_pair).result
+        txt_seq.it_li.append(TxtSeqIt(txt_seq, txtlc_mp, idx + 1))
+    for sc in TxtSeq.sc_li():
+        src_txt = src_txt.replace(f' {sc}', sc)
+    src_txt = src_txt.strip()
+
+    txt_seq.txtlc_mp = find_or_ins_translation(src_txt, lc_pair).result
+
+    txt_seq = db.ins_txt_seq(txt_seq).result
+    txt_seq: TxtSeq = db.sel_txt_seq(txt_seq.id_).result
+    write_to_setng(upd, txt_seq)
+    return txt_seq
 
 
-def i_execute_split_and_send(chat_id, lc_pair: tuple[Lc, Lc], split_str, src_msg_text, upd, user_id):
-    row_li, txt_map_li = i_execute_split(lc_pair, split_str, src_msg_text)
-    # noinspection PyUnusedLocal
-    txt_seq: TxtSeq = ins_seq_if_new(src_msg_text, lc_pair, txt_map_li, chat_id, user_id)
-    tbl_def = TableDef(
-        [TgColumn('src', -1, 'src', 30), TgColumn('trg', -1, 'trg', 30)])
-    reply_str = f'Split positions: {tg_reply.bold(split_str)}\n\n'
-    tg_reply.send_table(upd, tbl_def, row_li, reply_str)
-
-
-def i_execute_split(lc_pair: tuple[Lc, Lc], split_str, src_msg_text) \
-        -> (list[dict[str, str]], list[TxtlcMp]):
-    split_li: list[str] = split_str.split(',')
-    word_li = src_msg_text.split(' ')
-    word_li_len = len(word_li)
-    if int(split_li[len(split_li) - 1]) < word_li_len:
-        # to simplify the algorithm
-        split_li.append(str(word_li_len + 1))
-    start_index = 0
-    row_li = list[dict[str, str]]()
-    word_li_remain: list[str]
-    txt_map_li: list[TxtlcMp] = []
-    for count, split_after in enumerate(split_li):
-        split_after = int(split_after)
-        if split_after >= word_li_len:
-            split_after = word_li_len
-            word_li_remain = []
-        else:
-            word_li_remain = word_li[split_after:word_li_len]
-        words_to_join_li = word_li[start_index:split_after]
-        src_str = ' '.join(words_to_join_li)
-        translation: TxtlcMp = find_or_ins_translation(
-            src_str, lc_pair).result
-        txt_map_li.append(translation)
-        trg_str = translation.txtlc_trg.txt
-        word_dct = dict(
-            src=src_str,
-            trg=trg_str
-        )
-        row_li.append(word_dct)
-        start_index = split_after
-        if len(word_li_remain) == 0:
-            break
-    return row_li, txt_map_li
+def txt_seq_03(upd, txt_seq: TxtSeq):
+    i_send_txtlc_mp(upd,txt_seq.txtlc_mp)
+    i_send_txtlc_mp_li(upd, [it.txtlc_mp for it in txt_seq.it_li])
 
 
 def conv_onym_str_li(src_txt: str, trg_txt: str) -> (list[str], list[str], list[str], list[str]):
@@ -362,17 +336,37 @@ def i_cmd_lc2(upd: Update, chat_id, user_id, lc2_str: str, is_handle_retco=True,
         tg_reply.hdl_retco(upd, logger, g3r)
 
 
+def cmd_string(upd: Update, cmd_str: str) -> str:
+    cmd_prefix: str = setng_cmd_prefix(upd)
+    if cmd_str.startswith(cmd_prefix):
+        return cmd_str.replace(cmd_prefix, '...')
+    return cmd_str
+
+
+def setng_cmd_prefix(upd: Update) -> str:
+    chat_id, user_id = upd_extract_chat_user_id(upd)
+    setng_dct = settings.chat_user_setting(chat_id, user_id,
+                                           ELE_TY_cmd_prefix)
+    if cmd_prefix := db.read_setting(setng_dct).result:
+        return cmd_prefix
+    else:
+        return ''
+
+
 def hdl_cmd_setng_cmd_prefix(upd: Update, cmd_prefix: str):
     """Set the cmd prefix which replaces triple dot"""
-    chat_id, user_id = utilities.upd_extract_chat_user_id(upd)
+    chat_id, user_id = upd_extract_chat_user_id(upd)
     setng_dct = settings.chat_user_setting(chat_id, user_id,
                                            ELE_TY_cmd_prefix, cmd_prefix)
-    db.iup_setting(setng_dct)
+    if cmd_prefix:
+        db.iup_setting(setng_dct)
+    else:
+        setng_dct['ele_val'] = db.read_setting(setng_dct).result
 
     tg_reply.send_settings(upd, setng_dct)
 
 
-def i_tst_qt_mode_edit(upd: Update, chat_id, user_id, tst_tplate: TstTplate, qt_str: str):
+def i_tst_qt_mode_edit(upd: Update, tst_tplate: TstTplate, qt_str: str):
     it_wo_ans_li = tst_tplate.items_wo_ans()
     len_wo_ans = len(it_wo_ans_li)
     # noinspection PyTypeChecker
@@ -382,19 +376,12 @@ def i_tst_qt_mode_edit(upd: Update, chat_id, user_id, tst_tplate: TstTplate, qt_
         tst_tplate_it = it_wo_ans_li[0]
 
     if not qt_str:
-        if len_wo_ans == 0:
-            upd.effective_message.reply_html(f'{tst_tplate.label()}\n\n'
-                                             f'You can add more questions with /tst_tplate_qt %question%!')
-            return
-        upd.effective_message.reply_html(f'{tst_tplate.label()}\n\n'
-                                         f'{len_wo_ans} questions have no answers yet.\n'
-                                         f'Provide answers with /tst_tplate_ans %ans_str%!\n\nNext missing:\n'
-                                         f'{tst_tplate_it.label()}')
         if tst_tplate_it and tst_tplate_it.id_:
-            iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, str(tst_tplate_it.id_)))
+            write_to_setng(upd, tst_tplate_it.txt_seq)
+            write_to_setng(upd, tst_tplate_it)
         return
 
-    tst_tplate_it = tst_new_qt(chat_id, tst_tplate, qt_str)
+    tst_tplate_it = tst_new_qt(upd, tst_tplate, qt_str)
     tst_tplate.it_li.append(tst_tplate_it)
     g3r: [(TstTplate, TstTplateIt)] = db.ins_tst_tplate_item(tst_tplate, tst_tplate_it)
     if g3r.retco != 0:
@@ -403,31 +390,10 @@ def i_tst_qt_mode_edit(upd: Update, chat_id, user_id, tst_tplate: TstTplate, qt_
     tst_tplate, tst_tplate_it = g3r.result
 
     if tst_tplate_it and tst_tplate_it.id_:
-        iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, str(tst_tplate_it.id_)))
-    tst_item_lbl = tst_tplate_it.label() + '\n'
-    reply_str = f'Question added to test {tst_tplate.bkey}\n\n' \
-                f'{tst_item_lbl}'
-    upd.effective_message.reply_html(reply_str)
-
-
-def i_tst_ans_mode_exe(upd: Update, tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str):
-    ans_str_li = ans_str.split('\n')
-    if len(ans_str_li) != len(tst_tplate_it.ans_li):
-        tg_reply.reply(upd, f'Sorry bro/sis, your answer is wrong!')
-        return
-    for idx, ans_i in enumerate(ans_str_li):
-        ans_i_comp = ans_i.strip().lower()
-        ans_correct = tst_tplate_it.ans_li[idx].txtlc_src().txt
-        if ans_i_comp != ans_correct:
-            tg_reply.reply(upd, f'Sorry bro/sis, your answer is wrong!')
-            return
-    tg_reply.reply(upd, 'Excellent!')
-    tst_tplate_it_next = tst_tplate.item_next(tst_tplate_it.itnum)
-    if tst_tplate_it_next:
-        tg_reply.reply(upd, f'Please proceed to the next question with /tst_tplate_qt')
-    else:
-        tg_reply.reply(upd, f'Test {tst_tplate.bkey} finished!')
-    return tst_tplate_it_next
+        write_to_setng(upd, tst_tplate_it.txt_seq)
+        write_to_setng(upd, tst_tplate_it)
+    reply_str = f'Question added to test {tst_tplate.bkey}'
+    tg_reply.send(upd, reply_str)
 
 
 def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, lc_pair: tuple[Lc, Lc],
@@ -517,7 +483,8 @@ def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, 
         upd.effective_message.bot.send_message(
             chat_id=upd.effective_chat.id,
             text=reply_str,
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            timeout=10.0
         )
         # upd.effective_message.reply_html(reply_str, reply_to_message_id=None)
     return txt_map_li
@@ -553,32 +520,6 @@ def ins_onyms_from_str_li(lc: Lc, str_li: list[str], creator: str, onym_ty='syn'
         if g3r.retco == 0:
             id_ = g3r.result.id_
             logger.debug(f'Inserted Onym Mapping, ID:{id_}')
-
-
-def ins_seq_if_new(src_str: str, lc_pair: tuple[Lc, Lc], txt_map_li: list[TxtlcMp],
-                   chat_id: int, user_id: int) -> TxtSeq:
-    # src_str = src_str.lower()
-    txt_map: TxtlcMp = find_or_ins_translation(src_str, lc_pair).result
-    # noinspection PyArgumentList
-    txt_seq = TxtSeq(txt_map.txtlc_src)
-    txt_seq.convert_to_it_li(txt_map_li)
-    txt_seq = db.sel_txt_seq_by_uq(txt_seq)
-    if not txt_seq.id_:
-        txt_seq = db.ins_seq(txt_seq).result
-    db.iup_setting(
-        chat_user_setting(chat_id, user_id,
-                          elements.ELE_TY_txt_seq_id, str(txt_seq.id_))
-    )
-    return txt_seq
-
-
-def find_curr_txt_seq(chat_id: int, user_id: int) -> TxtSeq:
-    txt_seq_id = db.read_setting(chat_user_setting(chat_id, user_id, ELE_TY_txt_seq_id)).result
-    if not txt_seq_id:
-        # noinspection PyTypeChecker
-        return
-    txt_seq: TxtSeq = db.sel_txt_seq(txt_seq_id).result
-    return txt_seq
 
 
 def split_on_split(seq_str: str, op: str) -> G3Result[str]:
@@ -637,12 +578,12 @@ def read_lc_settings_w_fback(chat_id: int, user_id: int) -> (str, str):
 
 def setng_read_lc_pair(chat_id: int, user_id: int) -> (Lc, Lc):
     lc_str_pair = read_lc_settings_w_fback(chat_id, user_id)
-    return Lc.find_lc(lc_str_pair[0]), Lc.find_lc(lc_str_pair[1])
+    return Lc.fin(lc_str_pair[0]), Lc.fin(lc_str_pair[1])
 
 
-def tst_new_qt(chat_id: int, tst_tplate: TstTplate, qt_str: str) -> TstTplateIt:
+def tst_new_qt(upd: Update, tst_tplate: TstTplate, qt_str: str) -> TstTplateIt:
     if qt_str == f'.{ENT_TY_txt_seq.id_}.':
-        txt_seq: TxtSeq = find_curr_txt_seq(chat_id, tst_tplate.user_id)
+        txt_seq: TxtSeq = txt_seq_by_setng(upd)
         # noinspection PyTypeChecker
         txtlc_qt = None
     else:
@@ -655,21 +596,20 @@ def tst_new_qt(chat_id: int, tst_tplate: TstTplate, qt_str: str) -> TstTplateIt:
     return tst_tplate_item
 
 
-def tst_tplate_it_ans_01(tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str) -> (
-        TstTplateIt, TstTplateItAns):
-    if ans_str.startswith(f'.{ENT_TY_txt_seq_it.id_}-'):
-        itnum = ans_str.split('-')[1][:-1]
-        txt_seq_it = tst_tplate_it.txt_seq.it(int(itnum))
-        # noinspection PyTypeChecker
-        txtlc_ans = None
+def tst_tplate_it_ans_01(tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_str: str) -> Optional[TstTplateIt]:
+    if tst_tplate_it.txt_seq:
+        num_li: list[int] = [int(num.strip()) for num in ans_str.split(',')]
+        for num in num_li:
+            txt_seq_it = tst_tplate_it.txt_seq.it(num - 1)
+            tst_tplate_it_ans = tst_tplate_it.add_answer(txt_seq_it=txt_seq_it)
+            db.iup_tst_tplate_it_ans(tst_tplate_it, tst_tplate_it_ans)
     else:
-        # noinspection PyTypeChecker
-        txt_seq_it = None
         txtlc_ans: Txtlc = find_or_ins_translation(ans_str, tst_tplate.lc_pair()).result.txtlc_src
         if txtlc_ans in tst_tplate_it.ans_li:
-            return None, None
-    tst_tplate_it_ans = tst_tplate_it.add_answer(txt_seq_it, txtlc_ans)
-    return tst_tplate_it, tst_tplate_it_ans
+            return
+        tst_tplate_it_ans = tst_tplate_it.add_answer(txtlc_ans=txtlc_ans)
+        db.iup_tst_tplate_it_ans(tst_tplate_it, tst_tplate_it_ans)
+    return tst_tplate_it
 
 
 def tst_tplate_info(tst_tplate: TstTplate, f_trans=False, f_ans_shuffle=False) -> str:
@@ -701,23 +641,56 @@ def tst_tplate_info(tst_tplate: TstTplate, f_trans=False, f_ans_shuffle=False) -
 
 def tst_run_by_setng(upd: Update) -> TstRun:
     g3r = settings.ent_by_setng(
-        utilities.upd_extract_chat_user_id(upd), ELE_TY_tst_run_id,
+        upd_extract_chat_user_id(upd), ELE_TY_tst_run_id,
         db.sel_tst_run)
     tst_run: TstRun = g3r.result
     tst_run.propagate_tst_tplate(db.sel_tst_tplate(tst_run.tst_tplate.id_).result)
     return tst_run
 
 
-def tst_run_to_setng(upd: Update, tst_run: TstRun) -> G3Result:
+def txt_seq_by_setng(upd: Update) -> TxtSeq:
+    g3r = settings.ent_by_setng(
+        upd_extract_chat_user_id(upd), ELE_TY_txt_seq_id,
+        db.sel_txt_seq)
+    ent: TxtSeq = g3r.result
+    return ent
+
+
+def tst_tplate_by_setng(upd: Update) -> TstTplate:
+    g3r = settings.ent_by_setng(
+        upd_extract_chat_user_id(upd), ELE_TY_tst_tplate_id,
+        db.sel_tst_tplate)
+    ent: TstTplate = g3r.result
+    return ent
+
+
+def tst_tplate_it_by_setng(upd: Update) -> (TstTplate, TstTplateIt):
+    tst_tplate = tst_tplate_by_setng(upd)
+    # noinspection PyArgumentList
+    g3r = db.read_setting(chat_user_setting(*upd_extract_chat_user_id(upd), ELE_TY_tst_tplate_it_id))
+    if g3r.retco != 0:
+        # noinspection PyTypeChecker
+        return tst_tplate, None
+    item_id = int(g3r.result)
+    tst_tplate_by_item = db.sel_tst_tplate_by_item_id(item_id).result
+    if tst_tplate and tst_tplate != tst_tplate_by_item:
+        # noinspection PyTypeChecker
+        return tst_tplate, None
+    return tst_tplate_by_item, tst_tplate_by_item.item_by_id(item_id)
+
+
+def write_to_setng(upd: Update, ent: Any) -> G3Result:
+    if not ent:
+        return G3Result(4)
     return settings.ent_to_setng(
-        utilities.upd_extract_chat_user_id(upd), tst_run)
+        upd_extract_chat_user_id(upd), ent)
 
 
 def tst_run_01(upd: Update, tst_tplate: TstTplate):
     # noinspection PyArgumentList
-    tst_run: TstRun = TstRun(tst_tplate, *utilities.upd_extract_chat_user_id(upd))
+    tst_run: TstRun = TstRun(tst_tplate, *upd_extract_chat_user_id(upd))
     tst_run = db.ins_tst_run(tst_run).result
-    tst_run_to_setng(upd, tst_run)
+    write_to_setng(upd, tst_run)
     tst_run_tinfo(upd, tst_run)
 
 

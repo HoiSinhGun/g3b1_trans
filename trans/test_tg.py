@@ -25,14 +25,6 @@ def main():
                 {}
             ),
             test_utils.TestCaseHdl(utilities.g3_cmd_by_func(
-                tg_hdl.cmd_s),
-                {'reply_to_msg': test_utils.MyMessage(-1, datetime.now(),
-                                                      chat=test_utils.chat_default(),
-                                                      from_user=test_utils.user_default(),
-                                                      text='Hallo Welt, wie geht es Dir!?')
-                 }
-            ),
-            test_utils.TestCaseHdl(utilities.g3_cmd_by_func(
                 tg_hdl.cmd_t),
                 {'reply_to_msg': test_utils.MyMessage(-1, datetime.now(),
                                                       chat=test_utils.chat_default(),

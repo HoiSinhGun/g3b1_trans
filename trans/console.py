@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 from telegram import Update, User, Chat, constants
@@ -7,13 +8,16 @@ import test_utils
 import tg_db
 import tg_hdl
 import trans_main
+from g3b1_log.log import cfg_logger
 
 tg_chat_id: int = -579559871
 tg_user_id: int = 1749165037
 
+logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
+
 
 def c(msg: str):
-    print(str(f'\n\n>>>{msg}\n'))
+    # print(str(f'\n\n>>>{msg}\n'))
     dispatcher: Dispatcher = test_utils.setup(tg_hdl.__file__)
     user: User = User(tg_user_id, 'Gunnar', False)
     chat: Chat = Chat(tg_chat_id, constants.CHAT_GROUP)
@@ -35,3 +39,17 @@ def c(msg: str):
     trans_main.hdl_message(upd, ctx)
     for i in msg_callback.msg_li:
         print(i)
+
+
+def main():
+    a = 'go'
+    while a != 'exit':
+        # taking input from the user
+        a = input()
+        try:
+            c(a)
+        except Exception as e:
+            logger.exception(e)
+
+
+main()

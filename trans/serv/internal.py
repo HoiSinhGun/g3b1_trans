@@ -8,11 +8,11 @@ from g3b1_data.elements import *
 from g3b1_data.model import G3Result
 from g3b1_data.settings import chat_user_setting
 from g3b1_serv import tg_reply
-from tg_reply import italic, code
-
+from generic_mdl import TableDef, TgColumn
+from tg_reply import italic, code, bold
 from trans.data import db, TST_TY_LI
 from trans.data.db import iup_setting
-from trans.data.model import TstTplate, TstTplateIt, Lc, TstTplateItAns
+from trans.data.model import TstTplate, TstTplateIt, Lc, TstTplateItAns, TxtlcMp
 
 
 def i_sel_tst_tplate_bk(upd: Update, bkey: str) -> Optional[TstTplate]:
@@ -28,35 +28,11 @@ def i_sel_tst_tplate_bk(upd: Update, bkey: str) -> Optional[TstTplate]:
 
 def lc_check(upd: Update, lc_str: str) -> Lc:
     """send reply with error message and return false if lc not supported"""
-    if not (lc := Lc.find_lc(lc_str)):
+    if not (lc := Lc.fin(lc_str)):
         upd.effective_message.reply_html(f'Language code {lc_str} unknown')
         # noinspection PyTypeChecker
         return None
     return lc
-
-
-def i_tst_qt_mode_exe(upd: Update, tst_tplate: TstTplate, tst_tplate_it: TstTplateIt):
-    reply_str = f'Test {tst_tplate.bkey}\n' \
-                f'{italic("Separate several answers by row breaks")}\n\n' \
-                f'{code(tst_tplate_it.text())}'
-    upd.effective_message.reply_html(reply_str)
-
-
-def i_extract_split_string(txt: str) -> str:
-    if txt.find('| ') == -1:
-        return ''
-    while txt.find(' |') != -1:
-        txt = txt.replace(' |', '|')
-    pos = 0
-    split_str = ''
-    seq_li = txt.split('|')
-    for seq in seq_li:
-        w_li = seq.split(' ')
-        if split_str:
-            split_str += ','
-        pos += len(w_li)
-        split_str += str(pos)
-    return split_str
 
 
 def i_iup_setng_tst_template(chat_id: int, user_id: int, tst_template: TstTplate) -> G3Result:
@@ -70,6 +46,23 @@ def i_tst_types(upd: Update):
     for i in TST_TY_LI:
         reply_str += f'{str(i["id"]).rjust(4)} = {i["bkey"].ljust(40)}\n{i["descr"].ljust(40)}\n\n'
     upd.effective_message.reply_html(code(reply_str))
+
+
+def i_send_txtlc_mp(upd: Update, txtlc_mp: TxtlcMp, pre_str=''):
+    send_str = f'{pre_str}\n' \
+               f'{bold(txtlc_mp.txtlc_src.lc.value)}\n' \
+               f'{txtlc_mp.txtlc_src.txt}\n\n' \
+               f'{bold(txtlc_mp.txtlc_trg.lc.value)}\n' \
+               f'{italic(txtlc_mp.txtlc_trg.txt)}'
+    tg_reply.send(upd, send_str)
+
+
+def i_send_txtlc_mp_li(upd: Update, txtlc_mp_li: list[TxtlcMp], pre_str=''):
+    lc, lc2 = TxtlcMp.lc_pair(txtlc_mp_li[0])
+    tbl_def = TableDef(
+        [TgColumn('src', -1, lc.value, 30), TgColumn('trg', -1, lc2.value, 30)])
+    row_li = [dict(src=i.txtlc_src.txt, trg=i.txtlc_trg.txt) for i in txtlc_mp_li]
+    tg_reply.send_table(upd, tbl_def, row_li, pre_str)
 
 
 def i_iup_setng_tst_tplate_w_it(chat_id: int, user_id: int,

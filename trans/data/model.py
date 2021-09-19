@@ -94,10 +94,15 @@ class TxtlcMp:
     lc2: Lc
     translator: str = None
     score: int = 10
+    id_: int = None
 
     @staticmethod
     def ent_ty() -> EntTy:
         return ENT_TY_txtlc_mp
+
+    @staticmethod
+    def lc_pair(txtlc_mp: "TxtlcMp") -> (Lc, Lc):
+        return txtlc_mp.txtlc_src.lc, txtlc_mp.txtlc_trg.lc
 
 
 @dataclass
@@ -118,7 +123,7 @@ class TstTplateItAns:
 
     def txtlc_src(self) -> Txtlc:
         if self.txt_seq_it:
-            return self.txt_seq_it.txtlc_trg
+            return self.txt_seq_it.txtlc_mp.txtlc_src
         else:
             return self.txtlc
 
@@ -157,7 +162,7 @@ class TstTplateIt:
 
     def text(self) -> str:
         if self.txt_seq:
-            return self.txt_seq.txtlc_src.txt
+            return self.txt_seq.txtlc_mp.txtlc_src.txt
         elif self.txtlc_qt:
             return self.txtlc_qt.txt
         else:
@@ -165,9 +170,11 @@ class TstTplateIt:
 
     def label(self, txtlc_mapping: TxtlcMp = None):
         label = f'Item number: {bold(str(self.itnum))}\n'
+        if self.txt_seq:
+            label += f'TxtSeq ID: {bold(str(self.txt_seq.id_))}\n'
         if self.descr:
             label += bold(self.descr) + '\n'
-        it_txt = self.text()
+        it_txt = self.text().replace(' ,', ',').replace(' .', '.')
         if it_txt:
             label += it_txt + '\n'
             if txtlc_mapping:
@@ -181,11 +188,16 @@ class TstTplateIt:
                 nxt_num = i.ans_num + 1
         return nxt_num
 
-    def add_answer(self, txt_seq_it: "TxtSeqIt", txtlc_ans: Txtlc) -> TstTplateItAns:
+    def add_answer(self, txt_seq_it: "TxtSeqIt" = None, txtlc_ans: Txtlc = None) -> TstTplateItAns:
         # noinspection PyArgumentList
         it_ans = TstTplateItAns(self, txt_seq_it, txtlc_ans, self.tst_tplate.nxt_ans_num())
         self.ans_li.append(it_ans)
         return it_ans
+
+    def txt_seq_it(self, txt_seq_it_id: int) -> Optional["TxtSeqIt"]:
+        if not self.txt_seq:
+            return
+        return [it for it in self.txt_seq.it_li if it.id_ == txt_seq_it_id][0]
 
 
 @dataclass
@@ -206,7 +218,7 @@ class TstTplate:
     @staticmethod
     def from_row(row: Row) -> "TstTplate":
         return TstTplate(row['tst_type'], row['bkey'], row['tg_user_id'],
-                         Lc.find_lc(row['lc']), Lc.find_lc(row['lc2']),
+                         Lc.fin(row['lc']), Lc.fin(row['lc2']),
                          row['descr'], row['id'])
 
     @staticmethod
@@ -218,7 +230,7 @@ class TstTplate:
 
     def label(self):
         a_str = f'{self.id_}/{self.tst_type}/{self.bkey}'
-        lbl_str = f'Id/Type/Bkey: {bold(a_str)}\n{self.lc.value} -> {self.lc2.value}'
+        lbl_str = f'Id/Type/Bkey: {bold(a_str)}\nQuestions: {len(self.it_li)}\n{self.lc.value} -> {self.lc2.value}'
         if self.descr:
             lbl_str += italic(self.descr) + '\n'
         return lbl_str
@@ -464,8 +476,8 @@ class TstRunActSus:
 @dataclass
 class TxtSeqIt:
     txt_seq: "TxtSeq"
-    txtlc_trg: Txtlc
-    itnum: int
+    txtlc_mp: TxtlcMp
+    rowno: int
     id_: int = None
 
     @staticmethod
@@ -475,35 +487,47 @@ class TxtSeqIt:
 
 @dataclass
 class TxtSeq:
-    txtlc_src: Txtlc
-    lc: Lc = field(init=False)
+    chat_id: int
+    txt: str
+    lc: Lc
+    lc2: Lc
+    txtlc_mp: TxtlcMp = None
     id_: int = None
-    seq_str: str = ''
     it_li: list[TxtSeqIt] = field(init=False)
 
     @staticmethod
     def ent_ty() -> EntTy:
         return ENT_TY_txt_seq
 
+    @staticmethod
+    def sc_li() -> list[str]:
+        return ['.', ',', '!', ';', ':', '?']
+
+    @classmethod
+    def smart_format(cls, src_str: str) -> str:
+        txt = src_str
+        if src_str.startswith('||'):
+            # Example input: "||Hello world, how |  are| you today ! Is |everything|  OK?"
+            # output: "||Hello world|,|how|are|you today|!|Is|everything|OK|?|
+            txt = txt.replace('  ', ' ')
+            txt = txt.replace('| ', '|').replace(' |', '|')
+            for sc in cls.sc_li():
+                txt = txt.replace(f'{sc} ', sc).replace(f' {sc}', sc).replace(sc, f'|{sc}|')
+        txt = txt.strip('|')
+        return txt
+
+    @classmethod
+    def new(cls, chat_id: int, txt: str, lc_pair: tuple[Lc, Lc]) -> "TxtSeq":
+        return cls(chat_id, txt, lc_pair[0], lc_pair[1])
+
     def __post_init__(self) -> None:
-        self.lc = self.txtlc_src.lc
         self.it_li = []
 
     def it(self, itnum: int) -> TxtSeqIt:
         for item in self.it_li:
-            if itnum == item.itnum:
+            if itnum == item.rowno:
                 return item
 
     def convert_to_it_li(self, txt_map_li: list[TxtlcMp]):
-        self.it_li: list[TxtSeqIt] = []
-        self.seq_str = ''
-        count = 0
-        li_li = len(txt_map_li) - 1
-        for idx, txt_map in enumerate(txt_map_li):
-            src_len = len(txt_map.txtlc_src.txt.split(' '))
-            count += src_len
-            self.seq_str += str(count)
-            if idx < li_li:
-                self.seq_str += ','
-            # noinspection PyArgumentList
-            self.it_li.append(TxtSeqIt(self, txt_map.txtlc_src, idx))
+        self.it_li: list[TxtSeqIt] = \
+            [TxtSeqIt(self, txt_map, idx + 1) for idx, txt_map in enumerate(txt_map_li)]

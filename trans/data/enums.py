@@ -23,10 +23,10 @@ class Lc(Enum):
 
     @staticmethod
     def from_str_pair(lc_pair: tuple[str, str]) -> tuple["Lc", "Lc"]:
-        return Lc.find_lc(lc_pair[0]), Lc.find_lc(lc_pair[1])
+        return Lc.fin(lc_pair[0]), Lc.fin(lc_pair[1])
 
     @staticmethod
-    def find_lc(lc_str: str) -> "Lc":
+    def fin(lc_str: str) -> "Lc":
         if not lc_str:
             # noinspection PyTypeChecker
             return None

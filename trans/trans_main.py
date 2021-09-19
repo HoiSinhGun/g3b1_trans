@@ -4,11 +4,10 @@ from telegram import Update
 from telegram.ext import CallbackContext
 
 import generic_hdl
-import tg_reply
 from entities import EntTy
 from g3b1_data import settings, tg_db
 from g3b1_data.elements import ELE_TY_cmd, ELE_TY_cmd_prefix
-from g3b1_log.g3b1_log import cfg_logger
+from g3b1_log.log import cfg_logger
 from g3b1_serv import tgdata_main, utilities
 from g3b1_serv.utilities import G3Command, g3_m_dct
 from g3b1_serv.utilities import is_msg_w_cmd
@@ -16,7 +15,7 @@ from model import cmd_dct_by
 from trans import tg_hdl
 from trans.data import db
 
-logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
+logger = cfg_logger(logging.getLogger(__name__), logging.WARN)
 
 
 def hdl_message(upd: Update, ctx: CallbackContext) -> None:
@@ -34,11 +33,14 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
     g3_cmd: G3Command = None
     is_command_explicit = True
     if not is_msg_w_cmd(text):
-        # prefix with translates default cmd
-        cmd = db.read_setting(settings.chat_setting(
-            upd.effective_chat.id, ELE_TY_cmd)).result
-        if cmd:
-            text = f'.{cmd} {text}'
+        if text.startswith('|'):
+            text = f'.txt_seq_01 {text}'
+        else:
+            # prefix with translates default cmd
+            cmd = db.read_setting(settings.chat_setting(
+                upd.effective_chat.id, ELE_TY_cmd)).result
+            if cmd:
+                text = f'.{cmd} {text}'
         is_command_explicit = False
     if text.startswith('..') and not text.startswith('...'):
         pass
@@ -75,13 +77,6 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
             g3_cmd = cmd_dct[test_if_cmd]
             logger.debug(f'CMD: {g3_cmd}')
             if len(word_li) > 1:
-                if text.find('| ') != -1:  # and the_txt.find('| ') > 20:
-                    # Execute txt_seq_01 instead of t
-                    g3_cmd = cmd_dct['txt_seq_01']
-                    if test_if_cmd != 't' and test_if_cmd[:2] != 't__':
-                        tg_reply.reply(upd, f'The seq operator | '
-                                            f'may not be used with {test_if_cmd}!')
-                        return
                 ctx.args = word_li[1:]
             g3_cmd.handler(upd, ctx)
             matched = True
@@ -117,12 +112,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
-
-def test():
-    print('end')
-
-
-import atexit
-
-atexit.register(test)

@@ -7,16 +7,14 @@ from telegram.ext import CallbackContext
 import trans
 import trans.data
 from data.model import TxtSeq, TstRun
-from g3b1_log.g3b1_log import *
+from g3b1_log.log import *
 from g3b1_serv import utilities, tgdata_main
-from generic_mdl import TgColumn
 from model import g3_m_dct
 from serv.services import hdl_cmd_languages, i_cmd_lc, i_cmd_lc2, i_cmd_lc_view, hdl_cmd_setng_cmd_prefix, \
-    i_execute_split_and_send, i_tst_qt_mode_edit, i_tst_ans_mode_edit, i_tst_ans_mode_exe
+    txt_seq_03, i_tst_qt_mode_edit, cmd_string, tst_tplate_it_ans_01, txt_seq_01
 from subscribe.data import db as subscribe_db
 from subscribe.serv import services as subscribe_services
 from subscribe.serv.services import for_user
-from tg_reply import bold
 from trans.serv import internal
 from trans.serv import services
 from trans.serv.internal import *
@@ -227,49 +225,51 @@ def cmd_txt_seq_01(upd: Update, src_msg: Message, chat_id: int, user_id: int, te
         The texts will be translated by the bot.
     """
     src_str = text if text else src_msg.text
-    split_str = internal.i_extract_split_string(src_str)
-    src_str = src_str.replace('| ', ' ').replace('  ', ' ')
-
+    txt = TxtSeq.smart_format(src_str)
     lc_pair = services.setng_read_lc_pair(chat_id, user_id)
 
-    i_execute_split_and_send(chat_id, lc_pair, split_str, src_str, upd, user_id)
+    txt_seq: TxtSeq = txt_seq_01(upd, lc_pair, txt)
+    txt_seq_03(upd, txt_seq)
 
 
 @tgdata_main.tg_handler()
-def cmd_txt_seq_03(upd: Update, chat_id: int, user_id: int):
-    txt_seq: TxtSeq = services.find_curr_txt_seq(chat_id, user_id)
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
-    # if lc2 currently different, the txt_seq_it will be changed
-    i_execute_split_and_send(chat_id, lc_pair, txt_seq.seq_str,
-                             txt_seq.txtlc_src.txt, upd, user_id)
-
-
-@tgdata_main.tg_handler()
-def cmd_s(upd: Update, src_msg: Message,
-          chat_id: int, user_id: int,
-          split_str: str = None):
-    """ Split command. E.g. /s 3,5,7 -> split after the 3rd, 5th and 7th word
-    """
-    src_msg_text = src_msg.text
-    if not split_str:
-        split_str = '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15'
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
-
-    i_execute_split_and_send(chat_id, lc_pair, split_str, src_msg_text, upd, user_id)
-
-
-@tgdata_main.tg_handler()
-def cmd_ss(upd: Update, chat_id: int, user_id: int, op: str):
-    if not op:
-        tg_reply.cmd_p_req(upd, op, 1)
+def cmd_txt_seq_02(upd: Update, txt_seq_id: int):
+    """Set current txt_seq by id"""
+    if not txt_seq_id:
+        tg_reply.cmd_p_req(upd, ELE_TY_txt_seq_id.id_)
         return
-    txt_seq: TxtSeq = services.find_curr_txt_seq(chat_id, user_id)
-    src_msg_text = txt_seq.txtlc_src.txt
-    split_str = services.split_on_split(txt_seq.seq_str, op).result
-    lc = txt_seq.lc
-    lc2 = db.read_setting_w_fback(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc2)).result
+    txt_seq: TxtSeq = db.sel_txt_seq(txt_seq_id).result
+    if not txt_seq:
+        tg_reply.cmd_err_key_not_found(upd, ENT_TY_txt_seq.descr, str(txt_seq_id))
+        return
+    g3r = services.write_to_setng(upd, txt_seq)
+    if g3r.retco == 0:
+        tg_reply.send_settings(upd, g3r.result)
 
-    i_execute_split_and_send(chat_id, (lc, lc2), split_str, src_msg_text, upd, user_id)
+
+@tgdata_main.tg_handler()
+def cmd_txt_seq_03(upd: Update):
+    if not (txt_seq := services.txt_seq_by_setng(upd)):
+        tg_reply.cmd_err(upd)
+        return
+
+    txt_seq_03(upd, txt_seq)
+
+
+# @tgdata_main.tg_handler()
+# def cmd_ss(upd: Update, chat_id: int, user_id: int, op: str):
+#     if not op:
+#         tg_reply.cmd_p_req(upd, op, 1)
+#         return
+#     if not (txt_seq := services.txt_seq_by_setng(upd)):
+#         tg_reply.cmd_err(upd)
+#         return
+#     src_msg_text = txt_seq.txtlc_src.txt
+#     split_ops = services.split_on_split(txt_seq.seq_str, op).result
+#     lc = txt_seq.lc
+#     lc2 = db.read_setting_w_fback(settings.chat_user_setting(chat_id, user_id, ELE_TY_lc2)).result
+#
+#     i_execute_split_and_send(upd, (lc, lc2), split_ops, src_msg_text)
 
 
 @tgdata_main.tg_handler()
@@ -299,83 +299,61 @@ def cmd_msg_latest(upd: Update, reply_to_user_id: int, chat_id: int, user_id: in
 
 
 @tgdata_main.tg_handler()
-def cmd_tst_tplate_help(upd: Update, chat_id: int, user_id: int):
-    """Showing information about what you can do based on your settings."""
-    reply_str = ''
-    g3r = db.read_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_mode))
-    if g3r.retco != 0:
-        i_set_tst_mode_and_notify(upd, chat_id, user_id, 1)
-    tst_mode: int = int(db.read_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_mode)).result)
-    tst_tplate = internal.i_tst_tplate_by_setng(chat_id, user_id)
-    tst_tplate_it: TstTplateIt
-    if tst_tplate:
-        reply_str += f'{tst_tplate.label()}\n\n'
-    if tst_mode == 1:
-        # if not tst_template then need to pick one first with tst_take
-        # else proceed with tst_qt
-        tst_tplate, tst_tplate_it = internal.i_tst_tplate_it_by_setng(chat_id, user_id)
-        if not tst_tplate or not tst_tplate_it:
-            reply_str += f'Call /tst_take %bkey% to take an existing test\n'
-        if tst_tplate_it:
-            reply_str += f'Current task/question:\n{tst_tplate_it.text()}'
-            reply_str += f'Answer the task by calling /tst_ans %ans_str%'
-    elif tst_mode == 2:
-        # if not tst_template then need to pick one first eg by creating one
-        # tst_gen_v / tst_new
-        # then qt, ans
-        if not tst_tplate:
-            reply_str += f'Call /tst_new %bkey% to create a new test\n'
-        else:
-            tst_tplate, tst_tplate_it = internal.i_tst_tplate_it_by_setng(chat_id, user_id)
-            if not tst_tplate_it:
-                reply_str += f'Add a new question with /tst_tplate_qt %qt_str%'
-            else:
-                reply_str += f'{tst_tplate_it.label()}'
-                if tst_tplate_it.has_answer():
-                    for ans in tst_tplate_it.ans_li:
-                        reply_str += ans.label()
-                    reply_str += '\n\nAdd more answers with /tst_tplate_ans %ans_str%'
-                    reply_str += '\n\nAdd a new question with /tst_tplate_qt %qt_str%'
-                else:
-                    reply_str += '\n\nAdd answers with /tst_tplate_ans %ans_str%'
-    tg_reply.reply(upd, reply_str)
-
-
-@tgdata_main.tg_handler()
-def cmd_tst_tplate_exe(upd: Update, chat_id: int, user_id: int):
-    """Switch to Execution mode to take the tests"""
-    i_set_tst_mode_and_notify(upd, chat_id, user_id, 1)
-
-
-@tgdata_main.tg_handler()
-def cmd_tst_take(upd: Update, chat_id: int, user_id: int, bkey: str):
-    """Take the test with the given bkey."""
-    if not bkey:
-        tg_reply.cmd_p_req(upd, 'bkey')
-        return
-    g3r = db.sel_tst_tplate__bk(bkey)
-    if g3r.retco != 0:
-        tg_reply.cmd_err(upd)
-        return
-    tst_template = g3r.result
-    tst_template_it = tst_template.item_first()
-    if not tst_template_it:
-        tg_reply.reply(upd, f'{bold(bkey)} has not test items!')
-        tg_reply.cmd_err(upd)
-        return
-    i_set_tst_mode_and_notify(upd, chat_id, user_id, 1, True)
-    g3r = internal.i_iup_setng_tst_tplate_w_it(chat_id, user_id, tst_template_it)
-    if g3r != 0:
-        tg_reply.reply(upd, f'Storing tst_template setting failed!')
-    else:
-        tg_reply.cmd_success(upd)
-    tg_reply.reply(upd, f'Call tst_qt to read the first question. Separate alternative answers row breaks!')
-
-
-@tgdata_main.tg_handler()
 def cmd_tst_tplate_types(upd: Update):
     """Display the types of tests"""
     i_tst_types(upd)
+
+
+@tgdata_main.tg_handler()
+def cmd_tst_tplate_help(upd: Update, chat_id: int, user_id: int):
+    """Showing information about what you can do based on your settings."""
+    reply_str = ''
+    tst_tplate = services.tst_tplate_by_setng(upd)
+    tst_tplate_it: TstTplateIt
+    if tst_tplate:
+        reply_str += f'{tst_tplate.label()}\n\n'
+
+    # if not tst_template then need to pick one first eg by creating one
+    # tst_gen_v / tst_new
+    # then qt, ans
+    cmd_01 = cmd_string(upd, '.tst.tplate.01')
+    if not tst_tplate:
+        reply_str += f'Call {cmd_01} %type% %bkey% to create a new test\n'
+        tg_reply.reply(upd, reply_str)
+        return
+    tst_tplate, tst_tplate_it = services.tst_tplate_it_by_setng(upd)
+
+    cmd_qt_str = cmd_string(upd, '.tst.tplate.qt')
+    cmd_qt_del_str = cmd_string(upd, '.tst.tplate.qt.del')
+    cmd_ans_str = cmd_string(upd, '.tst.tplate.ans')
+    add_new_qt_str = f'Add a new question with either command:\n' \
+                     f'{code(cmd_qt_str + " %qt_str%")}\n' \
+                     f'{code(cmd_qt_str + " ." + ENT_TY_txt_seq.id_ + ".")}'
+    if not tst_tplate_it:
+        reply_str += add_new_qt_str
+        tg_reply.reply(upd, reply_str)
+        return
+    reply_str += f'{tst_tplate_it.label()}'
+    if tst_tplate_it.has_answer():
+        for ans in tst_tplate_it.ans_li:
+            reply_str += ans.label()
+        reply_str += f'\n\nAdd more answers with {code(cmd_ans_str + " %ans_str%")}'
+        reply_str += f'\n\n{add_new_qt_str}'
+    else:
+        reply_str += f'\n\nAdd answers with {code(cmd_ans_str + " %ans_str%")}'
+    reply_str += f'\n\nRemove current question with {code(cmd_qt_del_str)}'
+
+    # keyboard = [
+    #     [
+    #         InlineKeyboardButton("Option 1", callback_data='1'),
+    #         InlineKeyboardButton("Option 2", callback_data='2'),
+    #     ],
+    #     [InlineKeyboardButton("Option 3", callback_data='3')],
+    # ]
+    #
+    # reply_markup: InlineKeyboardMarkup = InlineKeyboardMarkup(keyboard)
+
+    tg_reply.reply(upd, reply_str)
 
 
 @tgdata_main.tg_handler()
@@ -482,29 +460,26 @@ def cmd_tst_tplate_del(upd: Update, bkey: str):
 
 
 @tgdata_main.tg_handler()
-def cmd_tst_tplate_qt(upd: Update, ctx: CallbackContext, chat_id: int, user_id: int, qt_str: str):
-    """Depending on setting tst_mode:
-     tst_mode_execute: Ask the student the question
-     tst_mode_edit: Create a question based on the text passed to the command
+def cmd_tst_tplate_qt(upd: Update, ctx: CallbackContext, qt_str: str):
+    """Create a question based on the text passed to the command
      """
 
-    tst_template = internal.i_tst_tplate_by_setng(chat_id, user_id)
+    tst_template = services.tst_tplate_by_setng(upd)
 
-    g3r = db.read_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_mode))
-    if g3r.retco != 0:
-        tg_reply.cmd_err_setng_miss(upd, ELE_TY_tst_mode)
-        return
+    i_tst_qt_mode_edit(upd, tst_template, qt_str)
+    cmd_tst_tplate_help(upd, ctx)
 
-    tst_mode = g3r.result
-    if tst_mode == 1:
-        tst_template, tst_tplate_item = internal.i_tst_tplate_it_by_setng(chat_id, user_id)
-        if not tst_template or not tst_tplate_item:
-            tg_reply.reply(upd, f'Please execute first /tst_take %bkey% to take a test.')
-            return
-        internal.i_tst_qt_mode_exe(upd, tst_template, tst_tplate_item)
-    elif tst_mode == 2:
-        i_tst_qt_mode_edit(upd, chat_id, user_id, tst_template, qt_str)
-        cmd_tst_tplate_help(upd, ctx)
+
+@tgdata_main.tg_handler()
+def cmd_tst_tplate_qt_del(upd: Update, ctx: CallbackContext):
+    """Delete the current question
+     """
+    tst_tplate, tst_tplate_it = services.tst_tplate_it_by_setng(upd)
+    if tst_tplate_it:
+        db.tst_tplate_it_del(tst_tplate_it)
+    else:
+        tg_reply.reply(upd, 'No question selected!')
+    cmd_tst_tplate_help(upd, ctx)
 
 
 @tgdata_main.tg_handler()
@@ -519,35 +494,17 @@ def cmd_tst_tplate_ans(upd: Update, ctx: CallbackContext, chat_id: int, user_id:
     tst_tplate, tst_tplate_it = internal.i_tst_tplate_it_by_setng(chat_id, user_id)
 
     if not tst_tplate_it:
-        upd.effective_message.reply_html(f'Current item not set. It will be set when you request'
-                                         f' or add the next question'
-                                         f'with /tst_qt')
+        cmd_tst_tplate_help(upd, ctx)
         return
 
     if not ans_str:
         tg_reply.cmd_p_req(upd, 'ans_str')
-        upd.effective_message.reply_html(f'Question of current item {tst_tplate_it.itnum}:\n\n'
-                                         f'{code(tst_tplate_it.text())}')
-        return
-
-    g3r = db.read_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_mode))
-    if g3r.retco != 0:
-        tg_reply.cmd_err_setng_miss(upd, ELE_TY_tst_mode)
-        return
-
-    tst_mode = g3r.result
-    if tst_mode == 1:
-        tst_tplate_it_next = i_tst_ans_mode_exe(upd, tst_tplate, tst_tplate_it, ans_str)
-
-        ele_val: str
-        if tst_tplate_it_next:
-            ele_val = str(tst_tplate_it_next.id_)
-        else:
-            ele_val = 'None'
-        db.iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, ele_val))
-    elif tst_mode == 2:
-        i_tst_ans_mode_edit(upd, tst_tplate, tst_tplate_it, ans_str)
         cmd_tst_tplate_help(upd, ctx)
+        return
+
+    tst_tplate_it_ans_01(tst_tplate, tst_tplate_it, ans_str)
+
+    cmd_tst_tplate_help(upd, ctx)
 
 
 @tgdata_main.tg_handler()
@@ -627,8 +584,8 @@ def cmd_telex(upd: Update):
         6: {'c1': 'tief fallend         ', 'c2': 'j              ', 'c3': 'nawngj  -> nang'}
     }
     tbl_def = utilities.TableDef(col_li=col_li)
-    tbl = utilities.dc_dic_to_table(hint_dct, tbl_def)
-    reply_str: str = utilities.table_print(tbl)
+    tbl = utilities.dc_dic_2_tbl(hint_dct, tbl_def)
+    reply_str: str = utilities.tbl_2_str(tbl)
     upd.effective_message.reply_html(
         f'<code>{reply_str}</code>'
     )

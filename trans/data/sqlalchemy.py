@@ -5,18 +5,19 @@ from sqlalchemy.engine import Row
 from sqlalchemy.engine.mock import MockConnection
 
 import integrity
+from elements import ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id
 from entities import *
-from g3b1_log.g3b1_log import cfg_logger
+from g3b1_log.log import cfg_logger
 from trans.data.enums import ActTy, Sus
 from trans.data.model import TstTplate, TstTplateIt, Txtlc, TstTplateItAns, Lc, TxtSeq, TxtSeqIt, TstRun, TstRunAct, \
-    TstRunActSus
+    TstRunActSus, TxtlcMp
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
 
 def from_row_tst_tplate(row: Row) -> TstTplate:
     return TstTplate(row['tst_type'], row['bkey'], row['tg_user_id'],
-                     Lc.find_lc(row['lc']), Lc.find_lc(row['lc2']),
+                     Lc.fin(row['lc']), Lc.fin(row['lc2']),
                      row['descr'], row['id'])
 
 
@@ -24,7 +25,7 @@ def from_row_tst_tplate_it(row: Row, repl_dct=None) -> TstTplateIt:
     if repl_dct is None:
         repl_dct = {}
 
-    return TstTplateIt(repl_dct['tst_tplate_id'], repl_dct['txt_seq_id'],
+    return TstTplateIt(repl_dct['tst_tplate_id'], repl_dct[ELE_TY_txt_seq_id.col_name],
                        repl_dct['quest__txtlc_id'], row['itnum'],
                        row['descr'], row['id'])
 
@@ -33,7 +34,7 @@ def from_row_tst_tplate_it_ans(row: Row, repl_dct=None) -> TstTplateItAns:
     if repl_dct is None:
         repl_dct = {}
 
-    return TstTplateItAns(repl_dct['tst_tplate_it_id'], repl_dct['txt_seq_it_id'], repl_dct['txtlc_id'],
+    return TstTplateItAns(repl_dct['tst_tplate_it_id'], repl_dct[ELE_TY_txt_seq_it_id.col_name], repl_dct['txtlc_id'],
                           row['ans_num'], row['id'])
 
 
@@ -69,22 +70,27 @@ def from_row_txt_seq(row: Row, repl_dct=None) -> TxtSeq:
     if repl_dct is None:
         repl_dct = {}
 
-    return TxtSeq(repl_dct['src__txtlc_id'],
-                  row['id'], row['seq_str'])
+    return TxtSeq(row['chat_id'], row['txt'], Lc.fin(row['lc']), Lc.fin(row['lc2']),
+                  repl_dct.get(ELE_TY_txtlc_mp_id.col_name, row[ELE_TY_txtlc_mp_id.col_name]), row['id'])
 
 
 def from_row_txt_seq_it(row: Row, repl_dct=None) -> TxtSeqIt:
     if repl_dct is None:
         repl_dct = {}
 
-    # noinspection PyArgumentList
-    return TxtSeqIt(repl_dct['txt_seq_id'], repl_dct['trg__txtlc_id'],
-                    row['itnum'], row['id'])
+    return TxtSeqIt(repl_dct.get(ELE_TY_txt_seq_id.col_name, row[ELE_TY_txt_seq_id.col_name]),
+                    repl_dct.get(ELE_TY_txtlc_mp_id.col_name, row[ELE_TY_txtlc_mp_id.col_name]),
+                    row['rowno'], row['id'])
 
 
 def from_row_txtlc(row: Row) -> Txtlc:
-    # noinspection PyArgumentList
-    return Txtlc(row['txt'], Lc.find_lc(row['lc']), row['id'])
+    return Txtlc(row['txt'], Lc.fin(row['lc']), row['id'])
+
+
+def from_row_txtlc_mp(row: Row, repl_dct: dict[str, Any]) -> TxtlcMp:
+    return TxtlcMp(repl_dct.get('src__txtlc_id', row['src__txtlc_id']),
+                   repl_dct.get('trg__txtlc_id', row['trg__txtlc_id']),
+                   Lc.fin(row['lc2']), row['translator'], row['score'], row['id'])
 
 
 def pop_only_dc_fields(val_dct: dict[str, ...], tbl: Table) -> dict[str, ...]:
@@ -110,6 +116,8 @@ def orm(con: MockConnection, tbl: Table, row: Row, repl_dct=None) -> dict[str, A
 def from_row_any(ent_ty: EntTy, row: Row) -> Any:
     if ent_ty == ENT_TY_txtlc:
         return from_row_txtlc(row)
+    elif ent_ty == ENT_TY_txtlc_mp:
+        return from_row_txtlc_mp(row, {})
     elif ent_ty == ENT_TY_txt_seq:
         return from_row_txt_seq(row)
     elif ent_ty == ENT_TY_tst_tplate:
