@@ -11,14 +11,10 @@ from entities import EntTy, ENT_TY_tst_tplate, ENT_TY_txt_seq_it, ENT_TY_txt_seq
 from g3b1_serv.tg_reply import bold, italic
 from trans.data.enums import Lc, ActTy, Sus
 
-
-def user_settings(user_id: int, lc: str = None, lc2: str = None) -> dict[str, str]:
-    user_set_dct = dict(user_id=str(user_id))
-    if lc:
-        user_set_dct['lc'] = lc
-    if lc2:
-        user_set_dct['lc2'] = lc2
-    return user_set_dct
+ENT_TY_trans_li = [ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, ENT_TY_tst_tplate_it_ans,
+                   ENT_TY_tst_run, ENT_TY_tst_run_act, ENT_TY_tst_run_act_sus,
+                   ENT_TY_txt_seq, ENT_TY_txt_seq_it,
+                   ENT_TY_txtlc, ENT_TY_txtlc_mp, ENT_TY_txtlc_onym]
 
 
 class TransSqlDictFactory(dict):
@@ -42,12 +38,7 @@ class Txtlc:
     lc: Lc = None
     id_: int = field(repr=False, compare=False, default=0)
 
-    # Here we go: get entity type. I wrote that code before in Java
-    # In some product called Innbound. Owned by some Swiss company.
-    # Later on bought by some other company who forgot to look at what they actually bought.
-    # Their bosses incapable of selling the software.
-    # They wanted me also to sell the software.
-    # And I wondered why the heck am I an employee?
+    # Here we go again (EBTAM forever): get entity type.
     @staticmethod
     def ent_ty() -> EntTy:
         return ENT_TY_txtlc
@@ -160,21 +151,37 @@ class TstTplateIt:
     def has_answer(self) -> bool:
         return len(self.ans_li) > 0
 
-    def text(self) -> str:
+    def build_text(self, tst_run: "TstRun" = None) -> str:
         if self.txt_seq:
+            if tst_run:
+                ans_txt_seq_it_dct: dict[TxtSeqIt, TstTplateItAns] = {ans.txt_seq_it: ans for ans in self.ans_li}
+                text_str = ''
+                for it in self.txt_seq.it_li:
+                    if it in ans_txt_seq_it_dct.keys():
+                        ans: TstTplateItAns = ans_txt_seq_it_dct[it]
+                        if tst_run.ans_sccs(ans):
+                            it_str = f'({ans.ans_num}) {italic(it.txtlc_mp.txtlc_src.txt)}'
+                        else:
+                            it_str = f'({ans.ans_num}).....'
+                        if tst_run.ans_current().ans_num == ans.ans_num:
+                            it_str = bold(it_str)
+                    else:
+                        it_str = it.txtlc_mp.txtlc_src.txt
+                    text_str += it_str + ' '
+                return TxtSeq.smart_format(text_str)
             return self.txt_seq.txtlc_mp.txtlc_src.txt
         elif self.txtlc_qt:
             return self.txtlc_qt.txt
         else:
             return ''
 
-    def label(self, txtlc_mapping: TxtlcMp = None):
+    def build_descr(self, txtlc_mapping: TxtlcMp = None, tst_run: "TstRun" = None):
         label = f'Item number: {bold(str(self.itnum))}\n'
         if self.txt_seq:
             label += f'TxtSeq ID: {bold(str(self.txt_seq.id_))}\n'
         if self.descr:
             label += bold(self.descr) + '\n'
-        it_txt = self.text().replace(' ,', ',').replace(' .', '.')
+        it_txt = self.build_text(tst_run).replace(' ,', ',').replace(' .', '.')
         if it_txt:
             label += it_txt + '\n'
             if txtlc_mapping:
@@ -422,6 +429,15 @@ class TstRun:
 
         return all_ans_li[prev_idx]
 
+    def ans_sccs(self, ans: TstTplateItAns) -> bool:
+        act_sus_li = [act_sus
+                      for act in self.it_li if act.tst_tplate_it_ans == ans
+                      for act_sus in act.it_li if act_sus.sus == Sus.sccs]
+        if act_sus_li:
+            return True
+        else:
+            return False
+
 
 @dataclass
 class TstRunAct:
@@ -484,6 +500,15 @@ class TxtSeqIt:
     def ent_ty() -> EntTy:
         return ENT_TY_txt_seq_it
 
+    def __eq__(self, o: object) -> bool:
+        return self.__hash__() == o.__hash__()
+
+    def __ne__(self, o: object) -> bool:
+        return not self.__eq__(o)
+
+    def __hash__(self) -> int:
+        return hash(self.id_)
+
 
 @dataclass
 class TxtSeq:
@@ -515,6 +540,12 @@ class TxtSeq:
                 txt = txt.replace(f'{sc} ', sc).replace(f' {sc}', sc).replace(sc, f'|{sc}|')
         txt = txt.strip('|')
         return txt
+
+    @classmethod
+    def output_format(cls, text_str: str) -> str:
+        for sc in cls.sc_li():
+            text_str = text_str.replace(f' {sc}', sc)
+        return text_str.strip()
 
     @classmethod
     def new(cls, chat_id: int, txt: str, lc_pair: tuple[Lc, Lc]) -> "TxtSeq":

@@ -5,17 +5,16 @@ from telegram import ParseMode, Message
 
 import tg_db
 import trans.data
+from config.model import TransConfig
 from g3b1_log.log import *
 from g3b1_serv import utilities
-from generic_mdl import TgColumn, TableDef
 from subscribe.data import db as subscribe_db
 from subscribe.serv.services import for_user
-from tg_reply import bold, cmd_err
+from tg_reply import cmd_err
 from trans.data.enums import ActTy, Sus
-from trans.data.model import TxtSeq
-from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TstRun, TxtSeqIt
+from trans.data.model import Txtlc, TxtlcOnym, TxtSeq, TxtSeqIt
 from trans.serv.internal import *
-from utilities import upd_extract_chat_user_id
+from utilities import upd_extract_chat_user_id, str_uncapitalize
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
@@ -67,16 +66,14 @@ def find_or_ins_translation(txt: str, lc_pair: tuple[Lc, Lc]) -> G3Result[TxtlcM
     """Return text and translation, if not exists, create them with Google"""
     lc = lc_pair[0]
     lc2 = lc_pair[1]
-    txt_mapping = find_or_ins_txtlc_with_txtlc2(txt, lc, lc2)
-    if txt_mapping.txtlc_trg:
-        return G3Result(0, txt_mapping)
+    txtlc_mp = find_or_ins_txtlc_with_txtlc2(txt, lc, lc2)
+    if txtlc_mp.txtlc_trg:
+        return G3Result(0, txtlc_mp)
 
     # next: Google translate
-    trg_txt: str = translate_google(txt, lc.value, lc2.value)
-    txt_mapping.translator = 'google'
-    txt_mapping.score = 10
+    trg_txt, txtlc_mp.translator, txtlc_mp.score = TransConfig.translate_func(txt, lc.value, lc2.value)
 
-    return set_trg_of_map_and_save(txt_mapping, trg_txt)
+    return set_trg_of_map_and_save(txtlc_mp, trg_txt)
 
 
 def iup_translation(txtlc: Txtlc, txtlc2: Txtlc, translator: str, score: int = 80) -> G3Result:
@@ -101,7 +98,7 @@ def set_trg_of_map_and_save(txt_mapping: TxtlcMp, txt) -> G3Result:
     return g3r
 
 
-def translate_google(text: str, lc_str, lc2_str) -> str:
+def translate_google(text: str, lc_str, lc2_str) -> (str, str, int):
     """Translates text into the target language.
 
     Target must be an ISO 639-1 language code.
@@ -119,7 +116,8 @@ def translate_google(text: str, lc_str, lc2_str) -> str:
     # will return a sequence of results for each text.
     result = translate_client.translate(text, source_language=lc_str, target_language=lc2_str)
     # noinspection PyTypeChecker
-    return result["translatedText"]
+    txt_trans_str = result["translatedText"]
+    return txt_trans_str, 'google', 10
 
 
 def txt_seq_01(upd: Update, lc_pair: tuple[Lc, Lc], txt: str) -> TxtSeq:
@@ -133,9 +131,7 @@ def txt_seq_01(upd: Update, lc_pair: tuple[Lc, Lc], txt: str) -> TxtSeq:
         src_txt += txt_it + ' '
         txtlc_mp: TxtlcMp = find_or_ins_translation(txt_it, lc_pair).result
         txt_seq.it_li.append(TxtSeqIt(txt_seq, txtlc_mp, idx + 1))
-    for sc in TxtSeq.sc_li():
-        src_txt = src_txt.replace(f' {sc}', sc)
-    src_txt = src_txt.strip()
+    src_txt = TxtSeq.output_format(src_txt)
 
     txt_seq.txtlc_mp = find_or_ins_translation(src_txt, lc_pair).result
 
@@ -146,7 +142,7 @@ def txt_seq_01(upd: Update, lc_pair: tuple[Lc, Lc], txt: str) -> TxtSeq:
 
 
 def txt_seq_03(upd, txt_seq: TxtSeq):
-    i_send_txtlc_mp(upd,txt_seq.txtlc_mp)
+    i_send_txtlc_mp(upd, txt_seq.txtlc_mp)
     i_send_txtlc_mp_li(upd, [it.txtlc_mp for it in txt_seq.it_li])
 
 
@@ -230,7 +226,7 @@ def i_reply_str_from_txt_map_li_srcus(*p_li, **kw_p_li) -> str:
     return reply_str
 
 
-def i_reply_str_from_txt_map_li(user_id: int, idx_src_syn_last: int, lc: str, lc2: str, txt_map_li: list[TxtlcMp],
+def i_reply_str_from_txt_map_li(user_id: int, idx_src_syn_last: int, lc: Lc, lc2: Lc, txt_map_li: list[TxtlcMp],
                                 verbosity='') -> str:
     c = '='
     idx_all_last = len(txt_map_li) - 1
@@ -250,7 +246,7 @@ def i_reply_str_from_txt_map_li(user_id: int, idx_src_syn_last: int, lc: str, lc
             trg_str += f' {c} '
     if verbosity:
         if verbosity == 'v':
-            reply_str = f'{bold(lc)}\n'
+            reply_str = f'{bold(lc.value)}\n'
         elif verbosity == 'u':
             uname = subscribe_db.read_uname(user_id)
             reply_str = f'{bold(uname)}\n'
@@ -259,7 +255,7 @@ def i_reply_str_from_txt_map_li(user_id: int, idx_src_syn_last: int, lc: str, lc
         if verbosity in ['v', 'b']:
             reply_str += f'{src_str}\n'
         if verbosity == 'v':
-            reply_str += f'\n{bold(lc2)}\n'
+            reply_str += f'\n{bold(lc2.value)}\n'
         reply_str += f'{trg_str}'
         if verbosity == 'v':
             if syn_str or ant_str:
@@ -582,7 +578,7 @@ def setng_read_lc_pair(chat_id: int, user_id: int) -> (Lc, Lc):
 
 
 def tst_new_qt(upd: Update, tst_tplate: TstTplate, qt_str: str) -> TstTplateIt:
-    if qt_str == f'.{ENT_TY_txt_seq.id_}.':
+    if qt_str == f'.{ENT_TY_txt_seq.id}.':
         txt_seq: TxtSeq = txt_seq_by_setng(upd)
         # noinspection PyTypeChecker
         txtlc_qt = None
@@ -600,7 +596,7 @@ def tst_tplate_it_ans_01(tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_
     if tst_tplate_it.txt_seq:
         num_li: list[int] = [int(num.strip()) for num in ans_str.split(',')]
         for num in num_li:
-            txt_seq_it = tst_tplate_it.txt_seq.it(num - 1)
+            txt_seq_it = tst_tplate_it.txt_seq.it(num)
             tst_tplate_it_ans = tst_tplate_it.add_answer(txt_seq_it=txt_seq_it)
             db.iup_tst_tplate_it_ans(tst_tplate_it, tst_tplate_it_ans)
     else:
@@ -612,18 +608,18 @@ def tst_tplate_it_ans_01(tst_tplate: TstTplate, tst_tplate_it: TstTplateIt, ans_
     return tst_tplate_it
 
 
-def tst_tplate_info(tst_tplate: TstTplate, f_trans=False, f_ans_shuffle=False) -> str:
-    reply_str = tst_tplate.label() + '\n\n'
+def tst_tplate_info(tst_tplate: TstTplate, f_trans=False, tst_run: TstRun = None) -> list[str]:
+    reply_li: list[str] = [tst_tplate.label()]
     ans_li: list[TstTplateItAns] = list[TstTplateItAns]()
     for i in tst_tplate.it_li:
         # noinspection PyTypeChecker
         txtlc_mapping: TxtlcMp = None
         if f_trans:
-            txtlc = i.txt_seq.txtlc_src if i.txt_seq else i.txtlc_qt
+            txtlc = i.txt_seq.txtlc_mp.txtlc_src if i.txt_seq else i.txtlc_qt
             if txtlc:
                 txtlc_mapping = find_or_ins_translation(txtlc.txt, tst_tplate.lc_pair()).result
-        reply_str += i.label(txtlc_mapping) + '\n'
-        if f_ans_shuffle:
+        reply_str = i.build_descr(txtlc_mapping, tst_run=tst_run) + '\n'
+        if tst_run:
             ans_li.extend(i.ans_li)
         else:
             for ans in i.ans_li:
@@ -633,10 +629,10 @@ def tst_tplate_info(tst_tplate: TstTplate, f_trans=False, f_ans_shuffle=False) -
                     if ans.txtlc_src():
                         txtlc_mapping = find_or_ins_translation(ans.txtlc_src().txt, tst_tplate.lc_pair()).result
                 reply_str += ans.label(txtlc_mapping)
-        reply_str += '\n\n'
-    if f_ans_shuffle:
-        reply_str += ', '.join([i.txtlc_src().txt for i in ans_li])
-    return reply_str
+        reply_li.append(reply_str)
+    if tst_run:
+        reply_li.append(', '.join([str_uncapitalize(i.txtlc_src().txt) for i in ans_li]))
+    return reply_li
 
 
 def tst_run_by_setng(upd: Update) -> TstRun:
@@ -691,7 +687,7 @@ def tst_run_01(upd: Update, tst_tplate: TstTplate):
     tst_run: TstRun = TstRun(tst_tplate, *upd_extract_chat_user_id(upd))
     tst_run = db.ins_tst_run(tst_run).result
     write_to_setng(upd, tst_run)
-    tst_run_tinfo(upd, tst_run)
+    tst_run_qinfo(upd, tst_run)
 
 
 def tst_run_help(upd: Update, tst_run):
@@ -722,7 +718,11 @@ def tst_run_qans(upd: Update, tst_run: TstRun, tst_tplate_it_ans: TstTplateItAns
         upd.effective_message.reply_html(f'No question found!',
                                          reply_to_message_id=None)
         return
-    info_str = i_tst_run_q_ans_info(tst_tplate_it_ans)
+    info_str = i_tst_run_q_ans_info(tst_run, tst_tplate_it_ans) + '\n\n'
+    all_ans_li = tst_run.tst_tplate.all_ans_li()
+    shuffle(all_ans_li)
+    info_str += ', '.join([str_uncapitalize(i.txtlc_src().txt) for i in all_ans_li])
+
     tg_reply.send(upd, info_str)
     tst_run.ans_act_add(tst_tplate_it_ans, act_ty)
     db.ins_tst_run_act(tst_run)
@@ -735,7 +735,7 @@ def tst_run_qnext(upd: Update, tst_run: TstRun):
 
 def tst_run_qprev(upd: Update, tst_run: TstRun):
     tst_tplate_it_ans = tst_run.ans_prev()
-    tst_run_qans(upd, tst_run, tst_tplate_it_ans, ActTy.prev)
+    tst_run_qans(upd, tst_run, tst_tplate_it_ans, ActTy.qprev)
 
 
 def tst_run_qinfo(upd: Update, tst_run: TstRun):
@@ -747,12 +747,12 @@ def tst_run_qhint(upd: Update, tst_run: TstRun):
     tst_tplate_it_ans = tst_run.ans_current()
     tst_tplate_it = tst_tplate_it_ans.tst_tplate_it
     g3r = find_or_ins_translation(
-        tst_tplate_it.text(), tst_run.tst_tplate.lc_pair()
+        tst_tplate_it.build_text(), tst_run.tst_tplate.lc_pair()
     )
     all_ans_li = tst_run.tst_tplate.all_ans_li()
     shuffle(all_ans_li)
-    send_str = tst_tplate_it.label(g3r.result) + '\n\n'
-    send_str += ', '.join([i.txtlc_src().txt for i in all_ans_li])
+    send_str = tst_tplate_it.build_descr(g3r.result, tst_run) + '\n\n'
+    send_str += ', '.join([str_uncapitalize(i.txtlc_src().txt) for i in all_ans_li])
     tg_reply.send(upd, send_str)
     tst_run.ans_act_add(tst_tplate_it_ans, ActTy.qhint)
     db.ins_tst_run_act(tst_run)
@@ -762,12 +762,13 @@ def tst_run_qansw(upd: Update, tst_run: TstRun, text: str):
     tst_tplate_it_ans = tst_run.ans_current()
 
     sus: Sus
-    if text == tst_tplate_it_ans.txtlc.txt:
+    if text == tst_tplate_it_ans.txtlc_src().txt:
         sus = Sus.sccs
+        tg_reply.send(upd, '⭐')
     else:
         sus = Sus.fail
+        tg_reply.send(upd, '😔')
 
-    tg_reply.send(upd, str(sus))
     tst_run.ans_act_sus_add(tst_tplate_it_ans, ActTy.qansw, sus)
     db.ins_tst_run_act(tst_run)
 
@@ -777,8 +778,8 @@ def tst_run_qansw(upd: Update, tst_run: TstRun, text: str):
 
 
 def tst_run_tinfo(upd: Update, tst_run: TstRun):
-    tinfo_str = tst_tplate_info(tst_run.tst_tplate, f_trans=False, f_ans_shuffle=True)
-    tg_reply.reply(upd, tinfo_str)
+    tinfo_li = tst_tplate_info(tst_run.tst_tplate, f_trans=False, tst_run=tst_run)
+    tg_reply.li_send(upd, tinfo_li)
     tst_run.act_add(ActTy.tinfo)
     db.ins_tst_run_act(tst_run)
 
@@ -793,7 +794,7 @@ def tst_run_thint(upd: Update, tst_run: TstRun):
     shuffle(ans_li)
     row_dct_li: list[dict[str, str]] = []
     for ans in ans_li:
-        txtlc_mp = find_or_ins_translation(ans.txtlc_src().txt, tst_tplate.lc_pair()).result
+        txtlc_mp = find_or_ins_translation(str_uncapitalize(ans.txtlc_src().txt), tst_tplate.lc_pair()).result
         row_dct_li.append({'lc': txtlc_mp.txtlc_src.txt, 'lc2': txtlc_mp.txtlc_trg.txt})
     tg_reply.send_table(upd, TableDef(col_li), row_dct_li)
     tst_run.act_add(ActTy.thint)

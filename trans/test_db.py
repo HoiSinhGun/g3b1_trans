@@ -10,7 +10,8 @@ import test_utils
 import tg_hdl
 import utilities
 from entities import ENT_TY_li, G3_M_TRANS
-from model import G3Command, g3_m_dct
+from g3b1_cfg.tg_cfg import sel_g3_m
+from model import G3Command, g3_m_dct, G3Arg
 from trans.data.db import *
 
 is_print = True
@@ -44,16 +45,16 @@ class TstTplateRefs(unittest.TestCase):
 
     def test_ref_tbl(self):
         tbl_fk_li_dct: dict[Table, list[ForeignKey]] = {}
-        for tbl in [MetaData_TRANS.tables[i.tbl_name] for i in ENT_TY_li if i.g3_m_str == G3_M_TRANS]:
+        for tbl in [md_TRANS.tables[i.tbl_name] for i in ENT_TY_li if i.g3_m_str == G3_M_TRANS]:
             tbl_fk_li_dct[tbl] = list[ForeignKey]()
         for ent_ty in [i for i in ENT_TY_li if i.g3_m_str == G3_M_TRANS]:
             # noinspection PyUnresolvedReferences
-            self.print(ent_ty.id_)
-            for k, v in ent_ty.ref_tbl_dct(MetaData_TRANS).items():
+            self.print(ent_ty.id)
+            for k, v in ent_ty.ref_tbl_dct(md_TRANS).items():
                 if k in tbl_fk_li_dct.keys():
                     for col_id in v:
                         column = Column(name='id', type_=Integer)
-                        column.table = MetaData_TRANS.tables[ent_ty.tbl_name]
+                        column.table = md_TRANS.tables[ent_ty.tbl_name]
                         tbl_fk_li_dct[k].append(ForeignKey(column))
                 # noinspection PyUnresolvedReferences
                 self.print(f'{k.name.ljust(25)} = {", ".join(v)}')
@@ -88,8 +89,9 @@ class TstTplateRefs(unittest.TestCase):
         func_def: FunctionDef = utilities.read_function(generic_hdl.__file__,
                                                         generic_hdl.cmd_ent_ty_33_li.__name__)
 
-        g3_cmd: G3Command = G3Command(g3_m_dct['trans'], generic_hdl.cmd_ent_ty_33_li,
-                                      func_def.args.args)
+        # noinspection PyUnresolvedReferences
+        g3_cmd: G3Command = G3Command(sel_g3_m('trans'), generic_hdl.cmd_ent_ty_33_li,
+                                      [G3Arg(arg.arg, arg.annotation.id) for arg in func_def.args.args])
 
         tstca_hdl = test_utils.TestCaseHdl(g3_cmd, {'ent_ty': ENT_TY_tst_tplate})
         callback = test_utils.MsgCallback()

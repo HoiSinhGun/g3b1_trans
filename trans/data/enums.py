@@ -49,7 +49,7 @@ class ActTy(Enum):
     tfnsh = 'tfnsh'
 
     @staticmethod
-    def by_val(val: str) -> "ActTy":
+    def fin(val: str) -> "ActTy":
         if not val:
             # noinspection PyTypeChecker
             return None
@@ -65,12 +65,12 @@ class Sus(Enum):
     fail = 'fail'
 
     @staticmethod
-    def by_val(val: str) -> "Sus":
+    def fin(val: str) -> "Sus":
         if not val:
             # noinspection PyTypeChecker
             return None
-        for k, v in ActTy.__members__.items():
-            if k == v:
+        for k, v in Sus.__members__.items():
+            if val == k:
                 return v
         # noinspection PyTypeChecker
         return None

@@ -1,8 +1,9 @@
 import logging
 from typing import Any
 
+from sqlalchemy import Table
+from sqlalchemy.engine import Connection
 from sqlalchemy.engine import Row
-from sqlalchemy.engine.mock import MockConnection
 
 import integrity
 from elements import ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id
@@ -52,7 +53,7 @@ def from_row_tst_run_act(row: Row, repl_dct=None) -> TstRunAct:
         repl_dct = {}
 
     return TstRunAct(repl_dct['tst_run_id'], repl_dct['tst_tplate_it_ans_id'],
-                     ActTy.by_val(row['act_ty']), row['act_tst'], row['txt'],
+                     ActTy.fin(row['act_ty']), row['act_tst'], row['txt'],
                      row['id'])
 
 
@@ -61,7 +62,7 @@ def from_row_tst_run_act_sus(row: Row, repl_dct=None) -> TstRunActSus:
         repl_dct = {}
 
     return TstRunActSus(repl_dct['tst_run_act_id'],
-                        Sus.by_val(row['sus_bkey']),
+                        Sus.fin(row['sus_bkey']),
                         repl_dct['tst_tplate_it_ans_id'],
                         row['id'])
 
@@ -109,15 +110,15 @@ def replace_lcs(val_dct: dict[str, ...]) -> dict[str, ...]:
     return new_dct
 
 
-def orm(con: MockConnection, tbl: Table, row: Row, repl_dct=None) -> dict[str, Any]:
+def orm(con: Connection, tbl: Table, row: Row, repl_dct=None) -> dict[str, Any]:
     return integrity.orm(con, tbl, row, from_row_any, repl_dct)
 
 
-def from_row_any(ent_ty: EntTy, row: Row) -> Any:
+def from_row_any(ent_ty: EntTy, row: Row, repl_dct: dict) -> Any:
     if ent_ty == ENT_TY_txtlc:
         return from_row_txtlc(row)
     elif ent_ty == ENT_TY_txtlc_mp:
-        return from_row_txtlc_mp(row, {})
+        return from_row_txtlc_mp(row, repl_dct)
     elif ent_ty == ENT_TY_txt_seq:
         return from_row_txt_seq(row)
     elif ent_ty == ENT_TY_tst_tplate:

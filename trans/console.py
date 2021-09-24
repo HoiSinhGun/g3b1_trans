@@ -8,6 +8,7 @@ import test_utils
 import tg_db
 import tg_hdl
 import trans_main
+from config.model import TransConfig
 from g3b1_log.log import cfg_logger
 
 tg_chat_id: int = -579559871
@@ -41,7 +42,15 @@ def c(msg: str):
         print(i)
 
 
+def translate_manual(text: str, lc: str, lc2: str) -> (str, str, int):
+    print(f'{lc} -> {lc2}')
+    print(f'Translate: {text}')
+    txt_trans = input()
+    return txt_trans, 'manual', 100
+
+
 def main():
+    TransConfig.translate_func = translate_manual
     a = 'go'
     while a != 'exit':
         # taking input from the user

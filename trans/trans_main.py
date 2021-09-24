@@ -4,16 +4,18 @@ from telegram import Update
 from telegram.ext import CallbackContext
 
 import generic_hdl
+from config.model import TransConfig
 from entities import EntTy
+from g3b1_cfg.tg_cfg import sel_g3_m
 from g3b1_data import settings, tg_db
 from g3b1_data.elements import ELE_TY_cmd, ELE_TY_cmd_prefix
 from g3b1_log.log import cfg_logger
 from g3b1_serv import tgdata_main, utilities
-from g3b1_serv.utilities import G3Command, g3_m_dct
+from g3b1_serv.utilities import G3Command
 from g3b1_serv.utilities import is_msg_w_cmd
-from model import cmd_dct_by
+from serv.services import translate_google
 from trans import tg_hdl
-from trans.data import db
+from trans.data import db, md_TRANS, eng_TRANS
 
 logger = cfg_logger(logging.getLogger(__name__), logging.WARN)
 
@@ -26,33 +28,37 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
     logger.debug(f'Target module: {g3_m_str}')
     # filter_r_g3cmd(utilities.)
     message = upd.effective_message
-    cmd_dct = cmd_dct_by(g3_m_str)
+    cmd_dct = sel_g3_m(g3_m_str).cmd_dct
     text = message.text
     matched: bool = False
     # noinspection PyTypeChecker
     g3_cmd: G3Command = None
     is_command_explicit = True
+    cmd_prefix = db.read_setting(settings.chat_user_setting(
+        upd.effective_chat.id, upd.effective_user.id, ELE_TY_cmd_prefix)).result
     if not is_msg_w_cmd(text):
         if text.startswith('|'):
             text = f'.txt_seq_01 {text}'
         else:
-            # prefix with translates default cmd
-            cmd = db.read_setting(settings.chat_setting(
-                upd.effective_chat.id, ELE_TY_cmd)).result
-            if cmd:
-                text = f'.{cmd} {text}'
+            ent_ty = EntTy.by_cmd_prefix(cmd_prefix)
+            if ent_ty and ent_ty.but_cmd_def:
+                text = ent_ty.get_cmd_by_but(text)
+            else:
+                # prefix with translates default cmd
+                cmd = db.read_setting(settings.chat_setting(
+                    upd.effective_chat.id, ELE_TY_cmd)).result
+                if cmd:
+                    text = f'.{cmd} {text}'
         is_command_explicit = False
     if text.startswith('..') and not text.startswith('...'):
         pass
     elif text.startswith('.'):
         if text.strip() == '.':
-            latest_cmd = utilities.read_latest_cmd(upd, g3_m_dct[g3_m_str])
+            latest_cmd = utilities.read_latest_cmd(upd, sel_g3_m(g3_m_str))
             text = latest_cmd.text
             is_command_explicit = False
             # pass text = utilities
         if text.startswith('...'):
-            cmd_prefix = db.read_setting(settings.chat_user_setting(
-                upd.effective_chat.id, upd.effective_user.id, ELE_TY_cmd_prefix)).result
             if cmd_prefix:
                 text = text.replace('...', cmd_prefix, 1)
         word_li = text.split(' ')
@@ -101,7 +107,8 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
 def start_bot():
     """Run the bot."""
     # str(bot_key): dict(db_row)
-    tgdata_main.start_bot(tg_hdl.__file__, hdl_for_message=hdl_message)
+    TransConfig.translate_func = translate_google
+    tgdata_main.start_bot(tg_hdl.__file__, eng=eng_TRANS,md=md_TRANS,hdl_for_message=hdl_message)
 
 
 def main() -> None:

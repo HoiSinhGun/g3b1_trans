@@ -12,7 +12,7 @@ from generic_mdl import TableDef, TgColumn
 from tg_reply import italic, code, bold
 from trans.data import db, TST_TY_LI
 from trans.data.db import iup_setting
-from trans.data.model import TstTplate, TstTplateIt, Lc, TstTplateItAns, TxtlcMp
+from trans.data.model import TstTplate, TstTplateIt, Lc, TstTplateItAns, TxtlcMp, TstRun
 
 
 def i_sel_tst_tplate_bk(upd: Update, bkey: str) -> Optional[TstTplate]:
@@ -162,7 +162,7 @@ def i_tst_tplate_it_by_setng(chat_id: int, user_id: int) -> (TstTplate, TstTplat
     return tst_tplate_by_item, tst_tplate_by_item.item_by_id(item_id)
 
 
-def i_tst_run_q_ans_info(ans: TstTplateItAns) -> str:
-    info_str = ans.tst_tplate_it.label() + '\n\n'
-    info_str += f'Answer for number: {ans.ans_num}'
+def i_tst_run_q_ans_info(tst_run: TstRun, ans: TstTplateItAns) -> str:
+    info_str = ans.tst_tplate_it.build_descr(tst_run=tst_run) + '\n\n'
+    info_str += f'Answer for number: {bold(str(ans.ans_num))}'
     return info_str
