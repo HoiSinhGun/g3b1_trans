@@ -36,6 +36,7 @@ class TransSqlDictFactory(dict):
 class Txtlc:
     txt: str = ''
     lc: Lc = None
+    s_review: str = ''
     id_: int = field(repr=False, compare=False, default=0)
 
     # Here we go again (EBTAM forever): get entity type.

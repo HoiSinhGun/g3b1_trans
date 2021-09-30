@@ -85,7 +85,7 @@ def from_row_txt_seq_it(row: Row, repl_dct=None) -> TxtSeqIt:
 
 
 def from_row_txtlc(row: Row) -> Txtlc:
-    return Txtlc(row['txt'], Lc.fin(row['lc']), row['id'])
+    return Txtlc(row['txt'], Lc.fin(row['lc']), s_review=row['s_review'], id_=row['id'])
 
 
 def from_row_txtlc_mp(row: Row, repl_dct: dict[str, Any]) -> TxtlcMp:
@@ -114,7 +114,7 @@ def orm(con: Connection, tbl: Table, row: Row, repl_dct=None) -> dict[str, Any]:
     return integrity.orm(con, tbl, row, from_row_any, repl_dct)
 
 
-def from_row_any(ent_ty: EntTy, row: Row, repl_dct: dict) -> Any:
+def from_row_any(ent_ty: EntTy[ET], row: Row, repl_dct: dict) -> ET:
     if ent_ty == ENT_TY_txtlc:
         return from_row_txtlc(row)
     elif ent_ty == ENT_TY_txtlc_mp:

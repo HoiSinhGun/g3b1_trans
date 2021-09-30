@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$PROJECT_DIR$/../g3b1_money/.idea/g3b1_money.iml" filepath="$PROJECT_DIR$/../g3b1_money/.idea/g3b1_money.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/g3b1_trans.iml" filepath="$PROJECT_DIR$/.idea/g3b1_trans.iml" />
       <module fileurl="file://$PROJECT_DIR$/../sandbox/.idea/sandbox.iml" filepath="$PROJECT_DIR$/../sandbox/.idea/sandbox.iml" />
     </modules>

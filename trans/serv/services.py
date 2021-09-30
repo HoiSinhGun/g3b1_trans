@@ -8,6 +8,8 @@ import trans.data
 from config.model import TransConfig
 from g3b1_log.log import *
 from g3b1_serv import utilities
+from generic_hdl import g3_cmd_by, send_menu_keyboard
+from model import MenuIt, G3Command
 from subscribe.data import db as subscribe_db
 from subscribe.serv.services import for_user
 from tg_reply import cmd_err
@@ -54,7 +56,7 @@ def find_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) -> TxtlcM
 
 
 def txtlc_cp_txt(lc_pair: tuple[Lc, Lc], txt: str) -> list[TxtlcMp]:
-    txtlc_li = db.txtlc_txt_cp(txt, lc_pair[0].value)
+    txtlc_li = db.txtlc_txt_cp(txt, lc_pair[0])
     txt_map_li: list[TxtlcMp] = []
     for txtlc in txtlc_li:
         txt_map: TxtlcMp = find_or_ins_translation(txtlc.txt, lc_pair).result
@@ -137,7 +139,7 @@ def txt_seq_01(upd: Update, lc_pair: tuple[Lc, Lc], txt: str) -> TxtSeq:
 
     txt_seq = db.ins_txt_seq(txt_seq).result
     txt_seq: TxtSeq = db.sel_txt_seq(txt_seq.id_).result
-    write_to_setng(upd, txt_seq)
+    write_to_setng(txt_seq)
     return txt_seq
 
 
@@ -373,8 +375,8 @@ def i_tst_qt_mode_edit(upd: Update, tst_tplate: TstTplate, qt_str: str):
 
     if not qt_str:
         if tst_tplate_it and tst_tplate_it.id_:
-            write_to_setng(upd, tst_tplate_it.txt_seq)
-            write_to_setng(upd, tst_tplate_it)
+            write_to_setng(tst_tplate_it.txt_seq)
+            write_to_setng(tst_tplate_it)
         return
 
     tst_tplate_it = tst_new_qt(upd, tst_tplate, qt_str)
@@ -386,8 +388,8 @@ def i_tst_qt_mode_edit(upd: Update, tst_tplate: TstTplate, qt_str: str):
     tst_tplate, tst_tplate_it = g3r.result
 
     if tst_tplate_it and tst_tplate_it.id_:
-        write_to_setng(upd, tst_tplate_it.txt_seq)
-        write_to_setng(upd, tst_tplate_it)
+        write_to_setng(tst_tplate_it.txt_seq)
+        write_to_setng(tst_tplate_it)
     reply_str = f'Question added to test {tst_tplate.bkey}'
     tg_reply.send(upd, reply_str)
 
@@ -675,18 +677,36 @@ def tst_tplate_it_by_setng(upd: Update) -> (TstTplate, TstTplateIt):
     return tst_tplate_by_item, tst_tplate_by_item.item_by_id(item_id)
 
 
-def write_to_setng(upd: Update, ent: Any) -> G3Result:
+def txt_menu(txt: str, sel_idx_li: list[int] = []):
+    g3_cmd: G3Command = g3_cmd_by('txtlc_review')
+    mi_list: list[MenuIt] = [
+        MenuIt(f'{g3_cmd.name} 1', '👎', None, g3_cmd, None, 1),
+        MenuIt(f'{g3_cmd.name} 0', '❓', None, g3_cmd, None, 0),
+        MenuIt(f'{g3_cmd.name} 2', '👍', None, g3_cmd, None, 2),
+        MenuIt('777', '\n')
+    ]
+    mi_list.extend(txt_to_menu_it(txt, g3_cmd_by('txt_seq_it_sel_toggle'), sel_idx_li))
+    mi_list.extend([
+        MenuIt('111', '\n'),
+        MenuIt(f'txt_seq_it_merge', '➕', None, g3_cmd_by('txt_seq_it_merge'), None),
+        MenuIt(f'txt_seq_it_translate', 'ℹ️', None, g3_cmd_by('txt_seq_it_translate'), None),
+        MenuIt(f'txt_seq_it_reset', '⏮', None, g3_cmd_by('txt_seq_it_reset'), None)
+    ])
+    send_menu_keyboard(txt.replace('|', ''), mi_list)
+
+
+def write_to_setng(ent: Any) -> G3Result:
     if not ent:
         return G3Result(4)
     return settings.ent_to_setng(
-        upd_extract_chat_user_id(upd), ent)
+        upd_extract_chat_user_id(), ent)
 
 
 def tst_run_01(upd: Update, tst_tplate: TstTplate):
     # noinspection PyArgumentList
     tst_run: TstRun = TstRun(tst_tplate, *upd_extract_chat_user_id(upd))
     tst_run = db.ins_tst_run(tst_run).result
-    write_to_setng(upd, tst_run)
+    write_to_setng(tst_run)
     tst_run_qinfo(upd, tst_run)
 
 
@@ -756,6 +776,53 @@ def tst_run_qhint(upd: Update, tst_run: TstRun):
     tg_reply.send(upd, send_str)
     tst_run.ans_act_add(tst_tplate_it_ans, ActTy.qhint)
     db.ins_tst_run_act(tst_run)
+
+
+# noinspection PyDefaultArgument
+def txt_to_menu_it(txt: str, g3_cmd: G3Command, sel_idx_li: list[int] = []) -> list[MenuIt]:
+    split: list[str] = txt.strip().split(' ')
+    row_len = 0
+    mi_list: list[MenuIt] = []
+    seq_str = ''
+    f_start = False
+    f_end = False
+    for idx, item in enumerate(split):
+        word = item.replace('|', '')
+        if f_start:
+            if seq_str:
+                seq_str += ' '
+            seq_str += word
+            if item.find('|') > -1:
+                f_start = False
+                f_end = True
+            else:
+                continue
+        else:
+            seq_str = word
+
+        row_len += len(seq_str)
+
+        if idx in sel_idx_li:
+            lbl = f'✔️ {seq_str}'
+        else:
+            lbl = seq_str
+
+        mi_list.append(
+            MenuIt(f'{g3_cmd.name} {idx}', lbl, None, g3_cmd, None, idx)
+        )
+        if row_len > 13:
+            row_len = 0
+            mi_list.append(MenuIt('row-' + str(idx), '\n'))
+
+        seq_str = ''
+
+        if item.find('|') > -1:
+            if f_end:
+                f_end = False
+            else:
+                f_start = True
+
+    return mi_list
 
 
 def tst_run_qansw(upd: Update, tst_run: TstRun, text: str):

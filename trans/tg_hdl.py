@@ -1,4 +1,5 @@
 """Trans commands """
+import random
 from builtins import int
 
 from telegram import Update, Message
@@ -7,15 +8,21 @@ from telegram.ext import CallbackContext
 import generic_hdl
 import trans
 import trans.data
-from data.model import TxtSeq
+from data.model import TxtSeq, Txtlc
 from entities import G3_M_TRANS
-from g3b1_cfg.tg_cfg import sel_g3_m
+from g3b1_cfg.tg_cfg import sel_g3_m, G3Context
 from g3b1_log.log import *
-from g3b1_serv import utilities, tgdata_main
+from g3b1_serv import utilities
+from g3b1_serv.generic_hdl import send_menu_keyboard, g3_cmd_by
+from g3b1_ui.model import TgUIC
 from generic_hdl import send_ent_ty_keyboard
+from model import MenuIt
 from serv.services import hdl_cmd_languages, i_cmd_lc, i_cmd_lc2, i_cmd_lc_view, hdl_cmd_setng_cmd_prefix, \
-    txt_seq_03, i_tst_qt_mode_edit, cmd_string, tst_tplate_it_ans_01, txt_seq_01
+    txt_seq_03, i_tst_qt_mode_edit, cmd_string, tst_tplate_it_ans_01, txt_seq_01, txt_to_menu_it, \
+    find_or_ins_translation, txt_menu
+from settings import cu_setng, read_setng
 from subscribe.data import db as subscribe_db
+from subscribe.data.db import eng_SUB, md_SUB
 from subscribe.serv import services as subscribe_services
 from subscribe.serv.services import for_user
 from trans.data import eng_TRANS, md_TRANS
@@ -35,6 +42,40 @@ def cmd_go2():
 def cmd_li_user(upd: Update, chat_id: int) -> None:
     """List the users id/uname for the bot"""
     subscribe_services.tbl_chat_user_send(upd, chat_id, eng_TRANS, md_TRANS, i_user_dct_append_lc_pair)
+
+
+@generic_hdl.tg_handler()
+def cmd_su_exit() -> None:
+    """Exit SU (switch user)"""
+    setng = settings.cu_setng(ELE_TY_su__user_id)
+    setng['user_id'] = G3Context.user_id()
+    settings.iup_setting(eng_SUB, md_SUB, setng)
+
+
+@generic_hdl.tg_handler()
+def cmd_su(req__user_id: id) -> None:
+    """SU (switch user)"""
+    setng = settings.cu_setng(ELE_TY_su__user_id, req__user_id)
+    setng['user_id'] = G3Context.user_id()
+    settings.iup_setting(eng_SUB, md_SUB, setng)
+
+
+@generic_hdl.tg_handler()
+def cmd_out_chat(trg_chat_id: str) -> None:
+    """Set chat for output"""
+    setng = settings.cu_setng(ELE_TY_out__chat_id, trg_chat_id)
+    setng['user_id'] = G3Context.user_id()
+    settings.iup_setting(eng_SUB, md_SUB, setng)
+    TgUIC.uic.cmd_sccs()
+
+
+@generic_hdl.tg_handler()
+def cmd_menu(upd: Update, ctx: CallbackContext, mi_str: str) -> None:
+    mi_str_split = mi_str.split(' ', 1)
+    g3_cmd = g3_cmd_by(mi_str_split[0])
+    if len(mi_str_split) == 2:
+        ctx.args = mi_str_split[1].split(' ')
+    g3_cmd.handler(upd, ctx)
 
 
 @generic_hdl.tg_handler()
@@ -149,6 +190,107 @@ def cmd_lc_view(upd: Update, chat_id, user_id, for_uname: str):
 
 
 @generic_hdl.tg_handler()
+def cmd_txtlc_rnd(req__lc: str):
+    txtlc_li = db.fi_txtlc(Lc.fin(req__lc))
+    rand_idx = random.randint(0, len(txtlc_li) - 1)
+    txtlc = txtlc_li[rand_idx]
+    iup_setting(cu_setng(ELE_TY_txtlc_id, str(txtlc.id_)))
+    iup_setting(cu_setng(ELE_TY_sel_idx_rng))
+    iup_setting(cu_setng(ELE_TY_txt, txtlc.txt))
+    txt_menu(txtlc.txt)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_seq_it_sel_toggle(req__idx_str: str, cur__txt: str, cur__sel_idx_rng: str):
+    idx: int = int(req__idx_str)
+    if cur__sel_idx_rng:
+        sel_idx_li: list[int] = [int(i) for i in cur__sel_idx_rng.split(',')]
+    else:
+        sel_idx_li = []
+    if idx in sel_idx_li:
+        sel_idx_li.remove(idx)
+    else:
+        sel_idx_li.append(idx)
+    sel_idx_li.sort()
+    iup_setting(cu_setng(ELE_TY_sel_idx_rng, ','.join([str(i) for i in sel_idx_li])))
+    txt_menu(cur__txt, sel_idx_li)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_seq_it_reset(cur__txt: str):
+    iup_setting(cu_setng(ELE_TY_sel_idx_rng))
+    new_txt = cur__txt.replace('|', '').strip()
+    iup_setting(cu_setng(ELE_TY_txt, new_txt))
+    txt_menu(new_txt)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_seq_it_translate(cur__txt: str, cur__sel_idx_rng: str):
+    if not cur__sel_idx_rng:
+        return
+    sel_idx_li: list[int] = [int(i) for i in cur__sel_idx_rng.split(',')]
+    sel_idx_li.sort()
+
+    menu_it_li: list[MenuIt] = txt_to_menu_it(cur__txt, G3Context.g3_cmd, sel_idx_li)
+    seq_it_li: list[str] = [mi.lbl.replace('✔️', '') for mi in menu_it_li if mi.lbl.startswith('✔️')]
+    lc = Lc.fin(read_setng(ELE_TY_lc))
+    lc2 = Lc.fin(read_setng(ELE_TY_lc2))
+    send_str = ''
+    for word in seq_it_li:
+        txtlc_mp: TxtlcMp = find_or_ins_translation(word.strip(), (lc, lc2)).result
+        send_str += f'{txtlc_mp.txtlc_src.txt}\n{italic(txtlc_mp.txtlc_trg.txt)}\n\n'
+    TgUIC.uic.send(send_str)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_seq_it_merge(cur__txt: str, cur__sel_idx_rng: str):
+    if not cur__sel_idx_rng:
+        return
+    sel_idx_li: list[int] = [int(i) for i in cur__sel_idx_rng.split(',')]
+    sel_idx_li.sort()
+    idx_start = sel_idx_li[0]
+    idx_end = sel_idx_li[len(sel_idx_li) - 1]
+    check = len(sel_idx_li) - (idx_end - idx_start)
+    if check != 1:
+        TgUIC.uic.error('To merge select adjacent words!')
+        return
+    word_li = cur__txt.split(' ')
+    new_txt = ''
+    for idx, word in enumerate(word_li):
+        if idx == idx_start:
+            new_txt += '|'
+        if new_txt:
+            new_txt += ' '
+        new_txt += word
+        if idx == idx_end:
+            new_txt += '|'
+    iup_setting(cu_setng(ELE_TY_sel_idx_rng))
+    iup_setting(cu_setng(ELE_TY_txt, new_txt))
+    txt_menu(new_txt)
+
+
+@generic_hdl.tg_handler()
+def cmd_txtlc_review(req__s_review: str, cur__txtlc: Txtlc):
+    if req__s_review == '0':
+        lc2 = Lc.fin(read_setng(ELE_TY_lc2))
+        txtlc_mp: TxtlcMp = find_or_ins_translation(cur__txtlc.txt, (cur__txtlc.lc, lc2)).result
+        TgUIC.uic.send(txtlc_mp.txtlc_trg.txt)
+        return
+    db.upd_txtlc(cur__txtlc.id_, req__s_review)
+    G3Context.ctx.args = [cur__txtlc.lc.value]
+    cmd_txtlc_rnd(G3Context.upd, G3Context.ctx)
+
+
+@generic_hdl.tg_handler()
+def cmd_t_word(req__idx_str: str, cur__txtlc: Txtlc):
+    lc = cur__txtlc.lc
+    lc2 = Lc.fin(read_setng(ELE_TY_lc2))
+    word = cur__txtlc.txt.split(' ')[int(req__idx_str)]
+    txtlc_mp: TxtlcMp = find_or_ins_translation(word, (lc, lc2)).result
+    TgUIC.uic.send(txtlc_mp.txtlc_trg.txt)
+
+
+@generic_hdl.tg_handler()
 def cmd_xx2xx(upd: Update, chat_id: int, user_id: int, text: str):
     cmd_split = upd.effective_message.text.split(' ', 1)[0].split('2')
     lc_str = cmd_split[0][1:].upper()
@@ -229,6 +371,34 @@ def cmd_repl__ta(upd: Update, src_msg: Message, chat_id: int, user_id: int):
 
 
 @generic_hdl.tg_handler()
+def cmd_text_divide(req__idx_str: str, cur__txt: str):
+    split: list[str] = cur__txt.split(' ')
+    txt_new: str = ''
+    for idx, word in enumerate(split):
+        if txt_new:
+            txt_new += ' '
+        if idx == int(req__idx_str):
+            if word.endswith('|'):
+                txt_new += word.replace('|', '')
+            else:
+                txt_new += word + '|'
+        else:
+            txt_new += word
+    G3Context.ctx.args = [txt_new]
+    cmd_text_new(G3Context.upd, G3Context.ctx)
+
+
+@generic_hdl.tg_handler()
+def cmd_text_new(req__txt: str):
+    setng = settings.cu_setng(ELE_TY_txt, req__txt)
+    settings.iup_setting(eng_TRANS, md_TRANS, setng)
+
+    mi_list: list[MenuIt] = txt_to_menu_it(req__txt, g3_cmd_by('text_divide'))
+
+    send_menu_keyboard(req__txt, mi_list)
+
+
+@generic_hdl.tg_handler()
 def cmd_txt_seq_01(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: str):
     """ Creates a sequence of the text by splitting at the operator |
         The texts will be translated by the bot.
@@ -251,7 +421,7 @@ def cmd_txt_seq_02(upd: Update, txt_seq_id: int):
     if not txt_seq:
         tg_reply.cmd_err_key_not_found(upd, ENT_TY_txt_seq.descr, str(txt_seq_id))
         return
-    g3r = services.write_to_setng(upd, txt_seq)
+    g3r = services.write_to_setng(txt_seq)
     if g3r.retco == 0:
         tg_reply.send_settings(upd, g3r.result)
 
@@ -303,7 +473,7 @@ def cmd_msg_latest(upd: Update, reply_to_user_id: int, chat_id: int, user_id: in
     for_user_id = user_id
     if reply_to_user_id:
         for_user_id = reply_to_user_id
-    msg = utilities.read_latest_message(chat_id, for_user_id)
+    msg = utilities.read_latest_message()
     tg_reply.print_msg(upd, msg)
 
 
@@ -363,6 +533,10 @@ def cmd_tst_tplate_help(upd: Update):
     # reply_markup: InlineKeyboardMarkup = InlineKeyboardMarkup(keyboard)
 
     tg_reply.reply(upd, reply_str)
+
+@generic_hdl.tg_handler()
+def cmd_tst_tplate_menu():
+    pass
 
 
 @generic_hdl.tg_handler()

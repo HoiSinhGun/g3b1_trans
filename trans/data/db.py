@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import Table, select, desc, update, delete, and_, or_, asc, text
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, CursorResult
 from sqlalchemy.engine import LegacyCursorResult, Result, Row
 from sqlalchemy.sql import Select, ColumnCollection, Update
 
@@ -14,6 +14,7 @@ import trans.data
 import utilities
 from entities import ENT_TY_txtlc, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, \
     ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp
+from g3b1_cfg.tg_cfg import G3Context
 from g3b1_data import settings
 from g3b1_data.elements import ELE_TY_chat_id, ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id, \
     ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id, EleTy
@@ -21,11 +22,11 @@ from g3b1_data.model import G3Result
 from g3b1_log.log import cfg_logger
 from tg_db import fetch_id
 from trans.data import md_TRANS, eng_TRANS
-from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TxtSeqIt, TstTplate, TstTplateIt, \
-    TstTplateItAns, Lc, TstRun, TstRunAct, TstRunActSus
 from trans.data.integrity import pop_only_dc_fields, replace_lcs, from_row_any, orm, from_row_txtlc_mp, \
     from_row_txt_seq, from_row_txt_seq_it, from_row_tst_tplate, from_row_tst_tplate_it, from_row_tst_tplate_it_ans, \
-    from_row_tst_run, from_row_tst_run_act, from_row_tst_run_act_sus
+    from_row_tst_run, from_row_tst_run_act, from_row_tst_run_act_sus, from_row_txtlc
+from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TxtSeqIt, TstTplate, TstTplateIt, \
+    TstTplateItAns, Lc, TstRun, TstRunAct, TstRunActSus
 
 logger = cfg_logger(logging.getLogger(__name__), logging.WARN)
 
@@ -68,6 +69,23 @@ def ins_txtlc(txtlc: Txtlc) -> G3Result:
             return G3Result(4)
         txtlc.id_ = rs.lastrowid
     return G3Result(0, txtlc)
+
+
+def upd_txtlc(txtlc_id: int, s_review: str):
+    tbl: Table = md_TRANS.tables['txtlc']
+    c = tbl.columns
+    stmnt = update(tbl).where(c['id'] == txtlc_id). \
+        values({'s_review': s_review})
+    eng_TRANS.execute(stmnt)
+
+
+def fi_txtlc(lc: Lc, s_review: str = '0', max_rows: int = 100) -> list[Txtlc]:
+    tbl: Table = md_TRANS.tables['txtlc']
+    c = tbl.columns
+    sql_stmnt: Select = select(tbl).where(c['lc'] == lc.value, c['s_review'] == s_review).limit(max_rows)
+    cr: CursorResult = eng_TRANS.execute(sql_stmnt)
+    txtlc_li = [from_row_txtlc(row) for row in cr.fetchall()]
+    return txtlc_li
 
 
 def fiby_txt_lc(txtlc: Txtlc, con: Connection = None) -> G3Result[Txtlc]:
@@ -142,11 +160,11 @@ def li_onym_by_txtlc(txtlc: Txtlc, src_and_trg: bool = True) -> \
         res_li: list[TxtlcOnym] = []
         for i in g3_res:
             # noinspection PyTypeChecker,PyArgumentList
-            txtlc_src = fiby_txt_lc(Txtlc('', None, i['src__txtlc_id'])).result
+            txtlc_src = fiby_txt_lc(Txtlc('', None, id_=i['src__txtlc_id'])).result
             # noinspection PyTypeChecker,PyArgumentList
-            txtlc_trg = fiby_txt_lc(Txtlc('', None, i['trg__txtlc_id'])).result
+            txtlc_trg = fiby_txt_lc(Txtlc('', None, id_=i['trg__txtlc_id'])).result
             # noinspection PyArgumentList
-            txt_lc_onym = TxtlcOnym(txtlc_src, txtlc_trg, i['creator'], i['onym_ty'], i['id'])
+            txt_lc_onym = TxtlcOnym(txtlc_src, txtlc_trg, i['creator'], i['onym_ty'], id_=i['id'])
             res_li.append(txt_lc_onym)
         return res_li
 
@@ -237,7 +255,7 @@ def fin_txtlc_mp(txtlc: Txtlc, lc2: Lc, translator=None) -> G3Result[TxtlcMp]:
         if not result:
             return G3Result(4)
         # noinspection PyTypeChecker
-        txtlc_trg = fiby_txt_lc(Txtlc('', None, result['trg__txtlc_id'])).result
+        txtlc_trg = fiby_txt_lc(Txtlc('', None, id_=result['trg__txtlc_id'])).result
         return G3Result(0, TxtlcMp(
             txtlc_src=txtlc, txtlc_trg=txtlc_trg,
             lc2=lc2.value, translator=result['translator'],
@@ -459,12 +477,14 @@ def ins_tst_tplate_item(tst_tplate: TstTplate, i: TstTplateIt) -> \
         return G3Result(0, (tst_tplate, i))
 
 
-def ins_tst_tplate(tst_template: TstTplate) -> G3Result[TstTplate]:
+def ins_tst_tplate(tst_tplate: TstTplate) -> G3Result[TstTplate]:
+    if not tst_tplate.user_id:
+        tst_tplate.user_id = G3Context.for_user_id()
     con: Connection
     with eng_TRANS.connect() as con:
         tbl: Table = md_TRANS.tables['tst_tplate']
         tbl_i: Table = md_TRANS.tables['tst_tplate_it']
-        val_dct = asdict(tst_template)
+        val_dct = asdict(tst_tplate)
         values = replace_lcs(pop_only_dc_fields(val_dct, tbl))
         insert_stmnt: insert = insert(tbl).values(
             values
@@ -472,12 +492,12 @@ def ins_tst_tplate(tst_template: TstTplate) -> G3Result[TstTplate]:
         rs = con.execute(insert_stmnt)
         if not (tst_tplate_id := fetch_id(con, rs, tbl.name)):
             return G3Result(4)
-        tst_template.id_ = tst_tplate_id
-        for i in tst_template.it_li:
+        tst_tplate.id_ = tst_tplate_id
+        for i in tst_tplate.it_li:
             txt_seq_id = i.txt_seq.id_ if i.txt_seq else None
             txtlc_id = i.txtlc_qt.id_ if i.txtlc_qt else None
             values = dict(
-                tst_tplate_id=tst_template.id_,
+                tst_tplate_id=tst_tplate.id_,
                 p_txt_seq_id=txt_seq_id,
                 quest__txtlc_id=txtlc_id,
                 itnum=i.itnum
@@ -486,7 +506,7 @@ def ins_tst_tplate(tst_template: TstTplate) -> G3Result[TstTplate]:
                 values
             )
             con.execute(insert_stmnt)
-        return G3Result(0, tst_template)
+        return G3Result(0, tst_tplate)
 
 
 def iup_tst_tplate_it_ans(it: TstTplateIt, ans: TstTplateItAns) -> \

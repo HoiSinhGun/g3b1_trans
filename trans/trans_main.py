@@ -22,6 +22,7 @@ logger = cfg_logger(logging.getLogger(__name__), logging.WARN)
 
 def hdl_message(upd: Update, ctx: CallbackContext) -> None:
     """store message to DB"""
+    generic_hdl.init_g3_ctx(upd, ctx)
     g3_m_str = ctx.bot.username.split('_')[1]
     if g3_m_str == 'translate':
         g3_m_str = 'trans'
