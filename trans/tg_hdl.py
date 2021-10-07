@@ -1,30 +1,35 @@
 """Trans commands """
-import random
+import re
 from builtins import int
 
 from telegram import Update, Message
 from telegram.ext import CallbackContext
 
 import generic_hdl
+import tg_hdl_txt_menu
 import trans
 import trans.data
+from data.enums import LcPair
 from data.model import TxtSeq, Txtlc
 from entities import G3_M_TRANS
-from g3b1_cfg.tg_cfg import sel_g3_m, G3Context
+from g3b1_cfg.tg_cfg import sel_g3_m, G3Ctx, g3_cmd_by
 from g3b1_log.log import *
 from g3b1_serv import utilities
-from g3b1_serv.generic_hdl import send_menu_keyboard, g3_cmd_by
 from g3b1_ui.model import TgUIC
+from g3b1_ui.ui_mdl import IdxRngSel
 from generic_hdl import send_ent_ty_keyboard
-from model import MenuIt
+from model import Menu
 from serv.services import hdl_cmd_languages, i_cmd_lc, i_cmd_lc2, i_cmd_lc_view, hdl_cmd_setng_cmd_prefix, \
-    txt_seq_03, i_tst_qt_mode_edit, cmd_string, tst_tplate_it_ans_01, txt_seq_01, txt_to_menu_it, \
-    find_or_ins_translation, txt_menu
-from settings import cu_setng, read_setng
+    txt_seq_03, i_tst_qt_mode_edit, cmd_string, tst_tplate_it_ans_01, txt_seq_01, \
+    write_to_setng, init_4_kb
+from serv.services_txt_menu import txt_menu
+from sql_utils import dc_dic_2_tbl, tbl_2_str
 from subscribe.data import db as subscribe_db
 from subscribe.data.db import eng_SUB, md_SUB
 from subscribe.serv import services as subscribe_services
 from subscribe.serv.services import for_user
+from trans.data import ELE_TY_txt_seq_id, ELE_TY_tst_run_id
+from trans.data import ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_run
 from trans.data import eng_TRANS, md_TRANS
 from trans.serv import internal
 from trans.serv import services
@@ -48,7 +53,7 @@ def cmd_li_user(upd: Update, chat_id: int) -> None:
 def cmd_su_exit() -> None:
     """Exit SU (switch user)"""
     setng = settings.cu_setng(ELE_TY_su__user_id)
-    setng['user_id'] = G3Context.user_id()
+    setng['user_id'] = G3Ctx.user_id()
     settings.iup_setting(eng_SUB, md_SUB, setng)
 
 
@@ -56,7 +61,7 @@ def cmd_su_exit() -> None:
 def cmd_su(req__user_id: id) -> None:
     """SU (switch user)"""
     setng = settings.cu_setng(ELE_TY_su__user_id, req__user_id)
-    setng['user_id'] = G3Context.user_id()
+    setng['user_id'] = G3Ctx.user_id()
     settings.iup_setting(eng_SUB, md_SUB, setng)
 
 
@@ -64,18 +69,9 @@ def cmd_su(req__user_id: id) -> None:
 def cmd_out_chat(trg_chat_id: str) -> None:
     """Set chat for output"""
     setng = settings.cu_setng(ELE_TY_out__chat_id, trg_chat_id)
-    setng['user_id'] = G3Context.user_id()
+    setng['user_id'] = G3Ctx.user_id()
     settings.iup_setting(eng_SUB, md_SUB, setng)
     TgUIC.uic.cmd_sccs()
-
-
-@generic_hdl.tg_handler()
-def cmd_menu(upd: Update, ctx: CallbackContext, mi_str: str) -> None:
-    mi_str_split = mi_str.split(' ', 1)
-    g3_cmd = g3_cmd_by(mi_str_split[0])
-    if len(mi_str_split) == 2:
-        ctx.args = mi_str_split[1].split(' ')
-    g3_cmd.handler(upd, ctx)
 
 
 @generic_hdl.tg_handler()
@@ -84,7 +80,7 @@ def cmd_subscribe(upd: Update, chat_id: int, user_id: int, subst_user_id: int = 
     """
     if subst_user_id:
         user_id = subst_user_id
-    subscribe_db.ins_bot_uc_subscription(chat_id, user_id, trans.data.BOT_BKEY_TRANS)
+    subscribe_db.ins_bcu(chat_id, user_id, trans.data.BOT_BKEY_TRANS)
     # db.ins_user_setting_default(user_id)
     tg_reply.cmd_success(upd)
 
@@ -190,104 +186,100 @@ def cmd_lc_view(upd: Update, chat_id, user_id, for_uname: str):
 
 
 @generic_hdl.tg_handler()
-def cmd_txtlc_rnd(req__lc: str):
-    txtlc_li = db.fi_txtlc(Lc.fin(req__lc))
-    rand_idx = random.randint(0, len(txtlc_li) - 1)
-    txtlc = txtlc_li[rand_idx]
-    iup_setting(cu_setng(ELE_TY_txtlc_id, str(txtlc.id_)))
-    iup_setting(cu_setng(ELE_TY_sel_idx_rng))
-    iup_setting(cu_setng(ELE_TY_txt, txtlc.txt))
-    txt_menu(txtlc.txt)
+def cmd_menu(upd: Update, ctx: CallbackContext, mi_str: str) -> None:
+    mi_str_split = mi_str.split(' ', 1)
+    setng_bkey: str = mi_str_split[0].split(':')[0]
+    cmd_sfx: str = mi_str_split[0].split(':')[1]
+    cmd_str = mi_str_split[0].replace(':', '_')
+
+    g3_cmd = g3_cmd_by(cmd_str)
+    if len(mi_str_split) == 2:
+        ctx.args = mi_str_split[1].split(' ')
+    f_send = TgUIC.uic.f_send
+    TgUIC.f_send = False
+    g3_cmd.handler(upd, ctx)
+    TgUIC.f_send = f_send
 
 
 @generic_hdl.tg_handler()
-def cmd_txt_seq_it_sel_toggle(req__idx_str: str, cur__txt: str, cur__sel_idx_rng: str):
-    idx: int = int(req__idx_str)
-    if cur__sel_idx_rng:
-        sel_idx_li: list[int] = [int(i) for i in cur__sel_idx_rng.split(',')]
-    else:
-        sel_idx_li = []
-    if idx in sel_idx_li:
-        sel_idx_li.remove(idx)
-    else:
-        sel_idx_li.append(idx)
-    sel_idx_li.sort()
-    iup_setting(cu_setng(ELE_TY_sel_idx_rng, ','.join([str(i) for i in sel_idx_li])))
-    txt_menu(cur__txt, sel_idx_li)
+def cmd_txt_menu_rnd(lc_str: str):
+    rnd_txt = tg_hdl_txt_menu.rnd(lc_str)
+    txt_menu(rnd_txt)
 
 
 @generic_hdl.tg_handler()
-def cmd_txt_seq_it_reset(cur__txt: str):
-    iup_setting(cu_setng(ELE_TY_sel_idx_rng))
-    new_txt = cur__txt.replace('|', '').strip()
-    iup_setting(cu_setng(ELE_TY_txt, new_txt))
-    txt_menu(new_txt)
+def cmd_txt_menu_reset(cur__txt: str):
+    """⏮ """
+    txt = tg_hdl_txt_menu.reset(cur__txt)
+    txt_menu(txt, TgUIC.get_send_str_li())
 
 
 @generic_hdl.tg_handler()
-def cmd_txt_seq_it_translate(cur__txt: str, cur__sel_idx_rng: str):
-    if not cur__sel_idx_rng:
+def cmd_txt_menu_rview_ok(cur__txtlc: Txtlc, cur__lc2: Lc):
+    """👍 """
+    TgUIC.f_send = True
+    tg_hdl_txt_menu.rview('2', cur__txtlc, cur__lc2)
+    # call next command
+    g3_ctx_dct = G3Ctx.as_dict()
+    G3Ctx.ctx.args = [cur__txtlc.lc.value]
+    cmd_txt_menu_rnd(G3Ctx.upd, G3Ctx.ctx)
+    G3Ctx.from_dict(g3_ctx_dct)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_rview_no(cur__txtlc: Txtlc, cur__lc2: Lc):
+    """👎 """
+    TgUIC.f_send = True
+    tg_hdl_txt_menu.rview('1', cur__txtlc, cur__lc2)
+    # call next command
+    g3_ctx_dct = G3Ctx.as_dict()
+    G3Ctx.ctx.args = [cur__txtlc.lc.value]
+    cmd_txt_menu_rnd(G3Ctx.upd, G3Ctx.ctx)
+    G3Ctx.from_dict(g3_ctx_dct)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_tlt(cur__txtlc: Txtlc, cur__lc2: Lc, cur__txt: str, cur__sel_idx_rng: IdxRngSel):
+    """❓ """
+    tg_hdl_txt_menu.tlt(cur__txtlc, cur__lc2)
+    txt_menu(cur__txt, TgUIC.get_send_str_li(), cur__sel_idx_rng)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_it_tgl(req__idx_str: str, cur__txt: str, cur__sel_idx_rng: IdxRngSel):
+    sel_idx_rng = tg_hdl_txt_menu.it_tgl(req__idx_str, cur__txt, cur__sel_idx_rng)
+    txt_menu(cur__txt, TgUIC.get_send_str_li(), sel_idx_rng)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_it_13(cur__txt: str, cur__sel_idx_rng: IdxRngSel):
+    """🔗 """
+    tg_hdl_txt_menu.it_13(cur__txt, cur__sel_idx_rng)
+    txt_menu(cur__txt, TgUIC.get_send_str_li(), cur__sel_idx_rng)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_it_tlt(cur__txt: str, cur__sel_idx_rng: IdxRngSel, cur__lc_pair: LcPair):
+    """ℹ """
+    tg_hdl_txt_menu.it_tlt(cur__txt, cur__sel_idx_rng, cur__lc_pair)
+    txt_menu(cur__txt, TgUIC.get_send_str_li(), cur__sel_idx_rng)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_it_ccat(cur__txt: str, cur__sel_idx_rng: IdxRngSel):
+    """➕ """
+    new_txt = tg_hdl_txt_menu.it_ccat(cur__txt, cur__sel_idx_rng)
+    txt_menu(new_txt, TgUIC.get_send_str_li(), cur__sel_idx_rng)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_13(txt: str):
+    """Find %txt% in the dictionary of the users current source language (check with .lc.view)"""
+    if not txt:
+        TgUIC.uic.err_p_miss(ELE_TY_txt)
         return
-    sel_idx_li: list[int] = [int(i) for i in cur__sel_idx_rng.split(',')]
-    sel_idx_li.sort()
 
-    menu_it_li: list[MenuIt] = txt_to_menu_it(cur__txt, G3Context.g3_cmd, sel_idx_li)
-    seq_it_li: list[str] = [mi.lbl.replace('✔️', '') for mi in menu_it_li if mi.lbl.startswith('✔️')]
-    lc = Lc.fin(read_setng(ELE_TY_lc))
-    lc2 = Lc.fin(read_setng(ELE_TY_lc2))
-    send_str = ''
-    for word in seq_it_li:
-        txtlc_mp: TxtlcMp = find_or_ins_translation(word.strip(), (lc, lc2)).result
-        send_str += f'{txtlc_mp.txtlc_src.txt}\n{italic(txtlc_mp.txtlc_trg.txt)}\n\n'
-    TgUIC.uic.send(send_str)
-
-
-@generic_hdl.tg_handler()
-def cmd_txt_seq_it_merge(cur__txt: str, cur__sel_idx_rng: str):
-    if not cur__sel_idx_rng:
-        return
-    sel_idx_li: list[int] = [int(i) for i in cur__sel_idx_rng.split(',')]
-    sel_idx_li.sort()
-    idx_start = sel_idx_li[0]
-    idx_end = sel_idx_li[len(sel_idx_li) - 1]
-    check = len(sel_idx_li) - (idx_end - idx_start)
-    if check != 1:
-        TgUIC.uic.error('To merge select adjacent words!')
-        return
-    word_li = cur__txt.split(' ')
-    new_txt = ''
-    for idx, word in enumerate(word_li):
-        if idx == idx_start:
-            new_txt += '|'
-        if new_txt:
-            new_txt += ' '
-        new_txt += word
-        if idx == idx_end:
-            new_txt += '|'
-    iup_setting(cu_setng(ELE_TY_sel_idx_rng))
-    iup_setting(cu_setng(ELE_TY_txt, new_txt))
-    txt_menu(new_txt)
-
-
-@generic_hdl.tg_handler()
-def cmd_txtlc_review(req__s_review: str, cur__txtlc: Txtlc):
-    if req__s_review == '0':
-        lc2 = Lc.fin(read_setng(ELE_TY_lc2))
-        txtlc_mp: TxtlcMp = find_or_ins_translation(cur__txtlc.txt, (cur__txtlc.lc, lc2)).result
-        TgUIC.uic.send(txtlc_mp.txtlc_trg.txt)
-        return
-    db.upd_txtlc(cur__txtlc.id_, req__s_review)
-    G3Context.ctx.args = [cur__txtlc.lc.value]
-    cmd_txtlc_rnd(G3Context.upd, G3Context.ctx)
-
-
-@generic_hdl.tg_handler()
-def cmd_t_word(req__idx_str: str, cur__txtlc: Txtlc):
-    lc = cur__txtlc.lc
-    lc2 = Lc.fin(read_setng(ELE_TY_lc2))
-    word = cur__txtlc.txt.split(' ')[int(req__idx_str)]
-    txtlc_mp: TxtlcMp = find_or_ins_translation(word, (lc, lc2)).result
-    TgUIC.uic.send(txtlc_mp.txtlc_trg.txt)
+    services.txt_13(txt)
 
 
 @generic_hdl.tg_handler()
@@ -310,20 +302,20 @@ def cmd_xx2xx(upd: Update, chat_id: int, user_id: int, text: str):
 
 
 @generic_hdl.tg_handler()
-def cmd_t(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: str):
+def cmd_t(upd: Update, src_msg: Message, user_id: int, text: str):
     """ Translate the last message or the replied to message to text.
     If text is empty, the bot will translate itself.
     """
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
+    lc_pair = services.read_setng_lc_pair()
     services.hdl_cmd_reply_trans(upd, src_msg, user_id, text, lc_pair,
                                  reply_string_builder=services.i_reply_str_from_txt_map_li)
 
 
 @generic_hdl.tg_handler()
-def cmd_t__v(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: str):
+def cmd_t__v(upd: Update, src_msg: Message, user_id: int, text: str):
     """ Translate the replied to message to trg_text
     """
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
+    lc_pair = services.read_setng_lc_pair()
     services.hdl_cmd_reply_trans(upd, src_msg, user_id, text, lc_pair,
                                  reply_string_builder=services.i_reply_str_from_txt_map_li_v)
 
@@ -332,7 +324,7 @@ def cmd_t__v(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: st
 def cmd_t__b(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: str):
     """ Translate the replied to message to trg_text
     """
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
+    lc_pair = services.read_setng_lc_pair()
     services.hdl_cmd_reply_trans(upd, src_msg, user_id, text, lc_pair,
                                  reply_string_builder=services.i_reply_str_from_txt_map_li_vb)
 
@@ -341,16 +333,16 @@ def cmd_t__b(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: st
 def cmd_t__u(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: str):
     """ Translate the replied to message to trg_text
     """
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
+    lc_pair = services.read_setng_lc_pair()
     services.hdl_cmd_reply_trans(upd, src_msg, user_id, text, lc_pair,
                                  reply_string_builder=services.i_reply_str_from_txt_map_li_srcus)
 
 
 @generic_hdl.tg_handler()
-def cmd_t__r(upd: Update, src_msg: Message, chat_id: int, user_id: int, trg_text: str):
+def cmd_t__r(upd: Update, src_msg: Message, user_id: int, trg_text: str):
     """ Translate the source message and then back again to the original lc.
     """
-    lc, lc2 = services.setng_read_lc_pair(chat_id, user_id)
+    lc, lc2 = services.read_setng_lc_pair()
     txt_map_li = services.hdl_cmd_reply_trans(upd, src_msg, user_id, trg_text, (lc, lc2), is_send_reply=False)
     if len(txt_map_li) < 1:
         tg_reply.cmd_err(upd)
@@ -361,11 +353,11 @@ def cmd_t__r(upd: Update, src_msg: Message, chat_id: int, user_id: int, trg_text
 
 
 @generic_hdl.tg_handler()
-def cmd_repl__ta(upd: Update, src_msg: Message, chat_id: int, user_id: int):
+def cmd_repl__ta(upd: Update, src_msg: Message, user_id: int):
     """ The bot translates the last message or the replied to message. In the result toi/ban will be
     replaced by anh/em
     """
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
+    lc_pair = services.read_setng_lc_pair()
     services.hdl_cmd_reply_trans(upd, src_msg, user_id, '', lc_pair,
                                  reply_string_builder=services.i_reply_str_from_txt_map_li_repl_ta)
 
@@ -384,8 +376,8 @@ def cmd_text_divide(req__idx_str: str, cur__txt: str):
                 txt_new += word + '|'
         else:
             txt_new += word
-    G3Context.ctx.args = [txt_new]
-    cmd_text_new(G3Context.upd, G3Context.ctx)
+    G3Ctx.ctx.args = [txt_new]
+    cmd_text_new(G3Ctx.upd, G3Ctx.ctx)
 
 
 @generic_hdl.tg_handler()
@@ -393,21 +385,23 @@ def cmd_text_new(req__txt: str):
     setng = settings.cu_setng(ELE_TY_txt, req__txt)
     settings.iup_setting(eng_TRANS, md_TRANS, setng)
 
-    mi_list: list[MenuIt] = txt_to_menu_it(req__txt, g3_cmd_by('text_divide'))
+    # mi_list: list[MenuIt] = txt_to_menu_it(req__txt, g3_cmd_by('text_divide'))
 
-    send_menu_keyboard(req__txt, mi_list)
+    menu = Menu('txt_new', req__txt)
+    # send_menu_keyboard(menu, mi_list)
 
 
 @generic_hdl.tg_handler()
-def cmd_txt_seq_01(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: str):
+def cmd_txt_seq_01(upd: Update, src_msg: Message, text: str):
     """ Creates a sequence of the text by splitting at the operator |
         The texts will be translated by the bot.
     """
     src_str = text if text else src_msg.text
     txt = TxtSeq.smart_format(src_str)
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
+    lc_pair = services.read_setng_lc_pair()
 
-    txt_seq: TxtSeq = txt_seq_01(upd, lc_pair, txt)
+    txt_seq: TxtSeq = txt_seq_01(lc_pair, txt)
+    write_to_setng(txt_seq)
     txt_seq_03(upd, txt_seq)
 
 
@@ -428,7 +422,7 @@ def cmd_txt_seq_02(upd: Update, txt_seq_id: int):
 
 @generic_hdl.tg_handler()
 def cmd_txt_seq_03(upd: Update):
-    if not (txt_seq := services.txt_seq_by_setng(upd)):
+    if not (txt_seq := services.txt_seq_by_setng()):
         tg_reply.cmd_err(upd)
         return
 
@@ -452,27 +446,8 @@ def cmd_txt_seq_03(upd: Update):
 
 
 @generic_hdl.tg_handler()
-def cmd_txt_13(upd: Update, chat_id: int, user_id: int, txt: str):
-    """Find %txt% in the dictionary of the users current source language (check with .lc.view)"""
-    if not txt:
-        tg_reply.cmd_p_req(upd, 'txt')
-
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
-    txt_map_li = services.txtlc_cp_txt(lc_pair, txt)
-
-    reply_str = ''
-    for txt_map in txt_map_li:
-        reply_str += f'{txt_map.txtlc_src.txt}\n{italic(txt_map.txtlc_trg.txt)}\n\n'
-
-    tg_reply.reply(upd, reply_str)
-
-
-@generic_hdl.tg_handler()
-def cmd_msg_latest(upd: Update, reply_to_user_id: int, chat_id: int, user_id: int):
+def cmd_msg_latest(upd: Update):
     """Display the latest message of the replied to user or the current user_id"""
-    for_user_id = user_id
-    if reply_to_user_id:
-        for_user_id = reply_to_user_id
     msg = utilities.read_latest_message()
     tg_reply.print_msg(upd, msg)
 
@@ -487,7 +462,7 @@ def cmd_tst_tplate_types(upd: Update):
 def cmd_tst_tplate_help(upd: Update):
     """Showing information about what you can do based on your settings."""
     reply_str = ''
-    tst_tplate = services.tst_tplate_by_setng(upd)
+    tst_tplate = services.tst_tplate_by_setng()
     tst_tplate_it: TstTplateIt
     if tst_tplate:
         reply_str += f'{tst_tplate.label()}\n\n'
@@ -495,16 +470,16 @@ def cmd_tst_tplate_help(upd: Update):
     # if not tst_template then need to pick one first eg by creating one
     # tst_gen_v / tst_new
     # then qt, ans
-    cmd_01 = cmd_string(upd, '.tst.tplate.01')
+    cmd_01 = cmd_string('.tst.tplate.01')
     if not tst_tplate:
         reply_str += f'Call {cmd_01} %type% %bkey% to create a new test\n'
         tg_reply.reply(upd, reply_str)
         return
-    tst_tplate, tst_tplate_it = services.tst_tplate_it_by_setng(upd)
+    tst_tplate, tst_tplate_it = services.tst_tplate_it_by_setng()
 
-    cmd_qt_str = cmd_string(upd, '.tst.tplate.qt')
-    cmd_qt_del_str = cmd_string(upd, '.tst.tplate.qt.del')
-    cmd_ans_str = cmd_string(upd, '.tst.tplate.ans')
+    cmd_qt_str = cmd_string('.tst.tplate.qt')
+    cmd_qt_del_str = cmd_string('.tst.tplate.qt.del')
+    cmd_ans_str = cmd_string('.tst.tplate.ans')
     add_new_qt_str = f'Add a new question with either command:\n' \
                      f'{code(cmd_qt_str + " %qt_str%")}\n' \
                      f'{code(cmd_qt_str + " ." + ENT_TY_txt_seq.id + ".")}'
@@ -534,9 +509,33 @@ def cmd_tst_tplate_help(upd: Update):
 
     tg_reply.reply(upd, reply_str)
 
+
 @generic_hdl.tg_handler()
-def cmd_tst_tplate_menu():
-    pass
+def cmd_tst_tplate_upl(req__text: str, cur__tst_tplate: TstTplate):
+    str_it_li: list[str] = req__text.replace('$$$\n\n', '\n\n$$$').replace('$$$\n', '\n$$$').split('$$$')
+    txt_seq_li: list[tuple[TxtSeq, list[str]]] = []
+    for str_it in str_it_li:
+        # ans_count = str_it.count('[')
+        # noinspection RegExpRedundantEscape
+        p = re.compile('\[(.*?)\]')
+        ans_str_li: list[str] = p.findall(str_it)
+        seq_str = '||' + str_it.replace('[', '|').replace(']', '|')
+        for ans_str in ans_str_li:
+            if ans_str.find('///') == -1:
+                continue
+            seq_str = seq_str.replace(ans_str, ans_str.split('///')[0].strip())
+        seq_str = TxtSeq.smart_format(seq_str, False)
+        lc_pair = services.read_setng_lc_pair()
+        txt_seq: TxtSeq = txt_seq_01(lc_pair, seq_str)
+        txt_seq_li.append((txt_seq, ans_str_li))
+
+    for txt_seq, ans_str_li in txt_seq_li:
+        write_to_setng(txt_seq)
+        tst_tplate_it = i_tst_qt_mode_edit(cur__tst_tplate, f'.{ENT_TY_txt_seq.id}.')
+        for ans_str in ans_str_li:
+            it = txt_seq.it_by_txt(ans_str)
+            tst_tplate_it_ans_01(cur__tst_tplate, tst_tplate_it, str(it.rowno))
+    TgUIC.uic.cmd_sccs()
 
 
 @generic_hdl.tg_handler()
@@ -555,7 +554,7 @@ def cmd_tst_tplate_01(upd: Update, ctx: CallbackContext, chat_id: int, user_id: 
         tg_reply.cmd_err_key_exists(upd, ENT_TY_tst_tplate.descr, bkey)
         return
 
-    lc_pair = services.setng_read_lc_pair(chat_id, user_id)
+    lc_pair = services.read_setng_lc_pair()
     tst_template = services.create_test(tst_type, bkey, user_id, [], lc_pair)
     if tst_template:
         g3r = internal.i_iup_setng_tst_template(chat_id, upd.effective_user.id, tst_template)
@@ -586,8 +585,8 @@ def cmd_tst_tplate_02(upd: Update, ctx: CallbackContext, chat_id: int, user_id: 
         return
 
     g3r = db.sel_tst_tplate__bk(bkey)
-    if g3r.result != 0:
-        tg_reply.cmd_err_key_exists(upd, ENT_TY_tst_tplate, bkey)
+    if g3r.retco != 0:
+        tg_reply.cmd_err_key_exists(upd, ENT_TY_tst_tplate.descr, bkey)
     tst_tplate: TstTplate = g3r.result
     tst_tplate_it: TstTplateIt
     if len(tst_tplate.items_wo_ans()) > 0:
@@ -595,7 +594,6 @@ def cmd_tst_tplate_02(upd: Update, ctx: CallbackContext, chat_id: int, user_id: 
     else:
         tst_tplate_it = tst_tplate.item_first()
     internal.i_iup_setng_tst_tplate_w_it(chat_id, user_id, tst_tplate_it, tst_tplate)
-    i_set_tst_mode_and_notify(upd, chat_id, user_id, 2)
     cmd_tst_tplate_help(upd, ctx)
 
 
@@ -607,7 +605,7 @@ def cmd_tst_tplate_02_lc(upd: Update, ctx: CallbackContext, chat_id: int, user_i
 
     tst_tplate = internal.i_tst_tplate_by_setng(chat_id, user_id)
     if not tst_tplate:
-        tg_reply.cmd_err_setng_miss(upd, ELE_TY_tst_tplate_id)
+        TgUIC.uic.err_setng_miss(ELE_TY_tst_tplate_id)
 
     db.upd_tst_template_lc_pair(tst_tplate.id_, lc_pair)
     ctx.args = []
@@ -645,9 +643,9 @@ def cmd_tst_tplate_qt(upd: Update, ctx: CallbackContext, qt_str: str):
     """Create a question based on the text passed to the command
      """
 
-    tst_template = services.tst_tplate_by_setng(upd)
+    tst_template = services.tst_tplate_by_setng()
 
-    i_tst_qt_mode_edit(upd, tst_template, qt_str)
+    i_tst_qt_mode_edit(tst_template, qt_str)
     cmd_tst_tplate_help(upd, ctx)
 
 
@@ -655,7 +653,7 @@ def cmd_tst_tplate_qt(upd: Update, ctx: CallbackContext, qt_str: str):
 def cmd_tst_tplate_qt_del(upd: Update, ctx: CallbackContext):
     """Delete the current question
      """
-    tst_tplate, tst_tplate_it = services.tst_tplate_it_by_setng(upd)
+    tst_tplate, tst_tplate_it = services.tst_tplate_it_by_setng()
     if tst_tplate_it:
         db.tst_tplate_it_del(tst_tplate_it)
     else:
@@ -700,7 +698,6 @@ def cmd_tst_gen_v(upd: Update, reply_to_msg: Message, chat_id: int, user_id, bke
     if not bkey:
         tg_reply.cmd_p_req(upd, 'bkey')
         return
-    i_set_tst_mode_and_notify(upd, chat_id, user_id, 1, True)
 
     for_user_id = reply_to_msg.from_user.id
     lc_tup = services.read_lc_settings_w_fback(chat_id, for_user_id)
@@ -725,7 +722,7 @@ def cmd_merge(upd: Update, reply_to_msg: Message, chat_id: int, opt_str: str):
     if opt_str.find('-d') > -1:
         inc_date = True
     for_user_id = reply_to_msg.from_user.id
-    lc_pair = services.setng_read_lc_pair(chat_id, for_user_id)
+    lc_pair = services.read_setng_lc_pair()
     lc = lc_pair[0].value
     lc2 = lc_pair[1].value
     msg_dct_li, txt_map_li = services.translate_all_since(reply_to_msg, lc_pair)
@@ -764,90 +761,105 @@ def cmd_telex(upd: Update):
         5: {'c1': 'hoch steigend        ', 'c2': 'x              ', 'c3': 'ngax    -> nga'},
         6: {'c1': 'tief fallend         ', 'c2': 'j              ', 'c3': 'nawngj  -> nang'}
     }
-    tbl_def = utilities.TableDef(col_li=col_li)
-    tbl = utilities.dc_dic_2_tbl(hint_dct, tbl_def)
-    reply_str: str = utilities.tbl_2_str(tbl)
+    tbl_def = TableDef(col_li=col_li)
+    tbl = dc_dic_2_tbl(hint_dct, tbl_def)
+    reply_str: str = tbl_2_str(tbl)
     upd.effective_message.reply_html(
         f'<code>{reply_str}</code>'
     )
 
 
 @generic_hdl.tg_handler()
-def cmd_tst_run_01(upd: Update, bkey: str):
+def cmd_tst_run_01(bkey: str):
     """Run a test as student"""
-    if not (tst_tplate := i_sel_tst_tplate_bk(upd, bkey)):
+    if not (tst_tplate := i_sel_tst_tplate_bk(G3Ctx.upd, bkey)):
         return
-    hdl_cmd_setng_cmd_prefix(upd, ENT_TY_tst_run.cmd_prefix)
-    services.tst_run_01(upd, tst_tplate)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    hdl_cmd_setng_cmd_prefix(G3Ctx.upd, ENT_TY_tst_run.cmd_prefix)
+    tst_run: TstRun = services.tst_run_01(tst_tplate)
+    info_str: str = services.tst_run_qinfo(tst_run)
+    services.tst_run_menu(tst_run, info_str)
+
+
+@generic_hdl.tg_handler()
+def cmd_tst_run_02():
+    """Run the cur__tst_run as student"""
+    tst_run: TstRun = services.tst_run_by_setng()
+    if not tst_run:
+        return TgUIC.uic.err_setng_miss(ELE_TY_tst_run_id)
+    hdl_cmd_setng_cmd_prefix(G3Ctx.upd, ENT_TY_tst_run.cmd_prefix, False)
+    info_str: str = services.tst_run_qinfo(tst_run)
+    services.tst_run_menu(tst_run, info_str)
 
 
 @generic_hdl.tg_handler()
 def cmd_tst_run_help(upd: Update):
     """Show help"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
+    tst_run: TstRun = services.tst_run_by_setng()
     services.tst_run_help(upd, tst_run)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    send_ent_ty_keyboard(init_4_kb())
 
 
 @generic_hdl.tg_handler()
 def cmd_tst_run_qnext(upd: Update):
     """Show next test question"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
-    services.tst_run_qnext(upd, tst_run)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    tst_run: TstRun = services.tst_run_by_setng()
+    info_str = services.tst_run_qnext(tst_run)
+    services.tst_run_menu(tst_run, info_str)
 
 
 @generic_hdl.tg_handler()
-def cmd_tst_run_qprev(upd: Update):
+def cmd_tst_run_qprev():
     """Show previous test question"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
-    services.tst_run_qprev(upd, tst_run)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    tst_run: TstRun = services.tst_run_by_setng()
+    info_str = services.tst_run_qprev(tst_run)
+    services.tst_run_menu(tst_run, info_str)
 
 
 @generic_hdl.tg_handler()
-def cmd_tst_run_qinfo(upd: Update):
+def cmd_tst_run_qinfo():
     """Show test question info"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
-    services.tst_run_qinfo(upd, tst_run)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    tst_run: TstRun = services.tst_run_by_setng()
+    info_str = services.tst_run_qinfo(tst_run)
+    services.tst_run_menu(tst_run, info_str)
 
 
 @generic_hdl.tg_handler()
 def cmd_tst_run_qhint(upd: Update):
     """Show test question hint"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
-    services.tst_run_qhint(upd, tst_run)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    tst_run: TstRun = services.tst_run_by_setng()
+    info_str = services.tst_run_qhint(tst_run)
+    services.tst_run_menu(tst_run, info_str)
 
 
 @generic_hdl.tg_handler()
 def cmd_tst_run_qansw(upd: Update, text: str):
     """Answer the current question"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
-    services.tst_run_qansw(upd, tst_run, text)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    tst_run: TstRun = services.tst_run_by_setng()
+    if not tst_run:
+        return TgUIC.uic.err_setng_miss(ELE_TY_tst_run_id)
+
+    info_str: str = services.tst_run_qansw(tst_run, text)
+    services.tst_run_menu(tst_run, info_str)
 
 
 @generic_hdl.tg_handler()
 def cmd_tst_run_tinfo(upd: Update):
     """Show current test info"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
-    services.tst_run_tinfo(upd, tst_run)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    tst_run: TstRun = services.tst_run_by_setng()
+    services.tst_run_tinfo(tst_run)
+    send_ent_ty_keyboard(init_4_kb())
 
 
 @generic_hdl.tg_handler()
 def cmd_tst_run_thint(upd: Update):
     """Show current test hint"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
+    tst_run: TstRun = services.tst_run_by_setng()
     services.tst_run_thint(upd, tst_run)
-    send_ent_ty_keyboard(ENT_TY_tst_run)
+    send_ent_ty_keyboard(init_4_kb())
 
 
 @generic_hdl.tg_handler()
 def cmd_tst_run_tfnsh(upd: Update):
     """Finish current test"""
-    tst_run: TstRun = services.tst_run_by_setng(upd)
+    tst_run: TstRun = services.tst_run_by_setng()
     services.tst_run_tfnsh(upd, tst_run)

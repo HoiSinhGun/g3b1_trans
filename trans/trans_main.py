@@ -55,7 +55,7 @@ def hdl_message(upd: Update, ctx: CallbackContext) -> None:
         pass
     elif text.startswith('.'):
         if text.strip() == '.':
-            latest_cmd = utilities.read_latest_cmd(upd, sel_g3_m(g3_m_str))
+            latest_cmd = utilities.read_latest_cmd(sel_g3_m(g3_m_str))
             text = latest_cmd.text
             is_command_explicit = False
             # pass text = utilities
@@ -109,7 +109,8 @@ def start_bot():
     """Run the bot."""
     # str(bot_key): dict(db_row)
     TransConfig.translate_func = translate_google
-    tgdata_main.start_bot(tg_hdl.__file__, eng=eng_TRANS,md=md_TRANS,hdl_for_message=hdl_message)
+    # noinspection PyUnresolvedReferences
+    tgdata_main.start_bot(tg_hdl.__file__, eng=eng_TRANS, md=md_TRANS, hdl_for_message=hdl_message)
 
 
 def main() -> None:

@@ -5,16 +5,31 @@ from typing import Any, Optional
 from sqlalchemy.engine import Row
 
 from elements import EleVal, ELE_TY_bkey, ELE_TY_tst_type, ELE_TY_user_id, ELE_TY_lc, ELE_TY_lc2
-from entities import EntTy, ENT_TY_tst_tplate, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate_it, \
+from g3b1_serv.str_utils import italic, bold
+from trans.data import EntTy, ENT_TY_tst_tplate, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate_it, \
     ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp, ENT_TY_txtlc_onym, ENT_TY_txtlc, ENT_TY_tst_run, \
-    ENT_TY_tst_run_act_sus, ENT_TY_tst_run_act
-from g3b1_serv.tg_reply import bold, italic
+    ENT_TY_tst_run_act_sus, ENT_TY_tst_run_act, ELE_TY_txtlc_id, ELE_TY_txtlc_mp_id, ELE_TY_txt_seq_it_id, \
+    ELE_TY_tst_run_act_id, ELE_TY_tst_tplate_id, ELE_TY_tst_run_id, ELE_TY_txt_seq_id, ELE_TY_tst_run_act_sus_id, \
+    ELE_TY_tst_tplate_it_ans_id, ELE_TY_tst_tplate_it_id
 from trans.data.enums import Lc, ActTy, Sus
 
 ENT_TY_trans_li = [ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, ENT_TY_tst_tplate_it_ans,
                    ENT_TY_tst_run, ENT_TY_tst_run_act, ENT_TY_tst_run_act_sus,
                    ENT_TY_txt_seq, ENT_TY_txt_seq_it,
                    ENT_TY_txtlc, ENT_TY_txtlc_mp, ENT_TY_txtlc_onym]
+
+ELE_TY_trans_li = [ELE_TY_txtlc_id, ELE_TY_txtlc_mp_id,
+                   ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id,
+                   ELE_TY_tst_run_id, ELE_TY_tst_run_act_id, ELE_TY_tst_run_act_sus_id,
+                   ELE_TY_tst_tplate_id, ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_it_ans_id]
+
+ENT_TY_tst_run.cmd_prefix = '.tst.run.'
+ENT_TY_tst_run.but_cmd_def = 'qansw'
+ENT_TY_tst_run.but_cmd_li = [
+    [('<<', 'qprev'), ('😶', 'qinfo'), ('🤔', 'qhint'), ('>>', 'qnext')],
+    [('❗', 'tinfo'), ('❓', 'thint'), ('🔐', 'tfnsh')]
+]
+ENT_TY_tst_run.keyboard_descr = 'Type the answer or choose an option!'
 
 
 class TransSqlDictFactory(dict):
@@ -119,6 +134,11 @@ class TstTplateItAns:
         else:
             return self.txtlc
 
+    def txtlc_src_alt(self) -> Txtlc:
+        if self.txtlc:
+            return self.txtlc
+        return self.txt_seq_it.txtlc_mp.txtlc_src
+
     def label(self, txtlc_mapping: TxtlcMp = None):
         label = f'AnsNr: {bold(str(self.ans_num))}: '
         if self.txtlc_src():
@@ -127,6 +147,15 @@ class TstTplateItAns:
                 label += f' ({italic(txtlc_mapping.txtlc_trg.txt)})'
             label += '\n'
         return label
+
+    def __eq__(self, o: object) -> bool:
+        return self.__hash__() == o.__hash__()
+
+    def __ne__(self, o: object) -> bool:
+        return not self.__eq__(o)
+
+    def __hash__(self) -> int:
+        return hash(self.id_)
 
 
 @dataclass
@@ -349,7 +378,9 @@ class TstTplate_:
         self.tst_type = EleVal(ELE_TY_tst_type, tst_tplate.tst_type)
         self.bkey = EleVal(ELE_TY_bkey, tst_tplate.bkey)
         self.user_id = EleVal(ELE_TY_user_id, tst_tplate.user_id)
+        # noinspection PyArgumentList
         self.lc = EleVal(ELE_TY_lc, tst_tplate.lc, tst_tplate.lc.value)
+        # noinspection PyArgumentList
         self.lc2 = EleVal(ELE_TY_lc2, tst_tplate.lc2, tst_tplate.lc2.value)
 
 
@@ -375,6 +406,17 @@ class TstRun:
         all_ans_li: list[TstTplateItAns] = tst_tplate.all_ans_li()
         for i in self.it_li:
             i.propagate_ans(all_ans_li)
+
+    def ans_sccs_li(self) -> list[TstTplateItAns]:
+        ans_sccs_li = [it.tst_tplate_it_ans for it in self.it_li if it.is_ans_sccs()]
+        return ans_sccs_li
+
+    def ans_open_li(self) -> list[TstTplateItAns]:
+        ans_li = self.tst_tplate.all_ans_li()
+        ans_sccs_li = self.ans_sccs_li()
+        for ans in ans_sccs_li:
+            ans_li.remove(ans)
+        return ans_li
 
     def act_add(self, act_ty: ActTy):
         # noinspection PyArgumentList,PyTypeChecker
@@ -457,6 +499,15 @@ class TstRunAct:
     def __post_init__(self) -> None:
         self.it_li = []
 
+    def is_ans_sccs(self) -> bool:
+        if not self.tst_tplate_it_ans:
+            return False
+        sccs_li = [it for it in self.it_li if it.sus == Sus.sccs]
+        if sccs_li:
+            return True
+        else:
+            return False
+
     def propagate_ans(self, tst_tplate_it_ans_li: list[TstTplateItAns]):
         if not self.tst_tplate_it_ans:
             return
@@ -530,15 +581,16 @@ class TxtSeq:
         return ['.', ',', '!', ';', ':', '?']
 
     @classmethod
-    def smart_format(cls, src_str: str) -> str:
+    def smart_format(cls, src_str: str, f_sc=True) -> str:
         txt = src_str
         if src_str.startswith('||'):
             # Example input: "||Hello world, how |  are| you today ! Is |everything|  OK?"
             # output: "||Hello world|,|how|are|you today|!|Is|everything|OK|?|
             txt = txt.replace('  ', ' ')
             txt = txt.replace('| ', '|').replace(' |', '|')
-            for sc in cls.sc_li():
-                txt = txt.replace(f'{sc} ', sc).replace(f' {sc}', sc).replace(sc, f'|{sc}|')
+            if f_sc:
+                for sc in cls.sc_li():
+                    txt = txt.replace(f'{sc} ', sc).replace(f' {sc}', sc).replace(sc, f'|{sc}|')
         txt = txt.strip('|')
         return txt
 
@@ -563,3 +615,8 @@ class TxtSeq:
     def convert_to_it_li(self, txt_map_li: list[TxtlcMp]):
         self.it_li: list[TxtSeqIt] = \
             [TxtSeqIt(self, txt_map, idx + 1) for idx, txt_map in enumerate(txt_map_li)]
+
+    def it_by_txt(self, ans_str: str) -> TxtSeqIt:
+        for item in self.it_li:
+            if item.txtlc_mp.txtlc_src.txt == ans_str:
+                return item

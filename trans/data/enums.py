@@ -1,5 +1,7 @@
 from enum import Enum
 
+from elements import EleVal
+
 
 class Lc(Enum):
     # Never change this order
@@ -35,6 +37,30 @@ class Lc(Enum):
                 return lc
         # noinspection PyTypeChecker
         return None
+
+    @classmethod
+    def from_ele_val(cls, ele_val: EleVal) -> EleVal:
+        ele_val.val_mp = cls.fin(ele_val.val)
+        return ele_val
+
+
+class LcPair:
+
+    def __init__(self, lc: Lc, lc2: Lc) -> None:
+        super().__init__()
+        self.lc = lc
+        self.lc2 = lc2
+
+    @classmethod
+    def from_tup(cls, lc_pair: tuple[Lc, Lc]):
+        return cls(lc_pair[0], lc_pair[1])
+
+    @classmethod
+    def from_ele_val(cls, ele_val: EleVal) -> EleVal:
+        lc_tup: tuple[str, ...] = ele_val.val
+        lc_pair = cls(Lc.fin(lc_tup[0]), Lc.fin(lc_tup[1]))
+        ele_val.val_mp = lc_pair
+        return ele_val
 
 
 class ActTy(Enum):

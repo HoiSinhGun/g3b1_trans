@@ -12,15 +12,16 @@ from sqlalchemy.sql import Select, ColumnCollection, Update
 import integrity as tg_integrity
 import trans.data
 import utilities
-from entities import ENT_TY_txtlc, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, \
-    ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp
-from g3b1_cfg.tg_cfg import G3Context
+from elements import ELE_TY_chat_id
+from g3b1_cfg.tg_cfg import G3Ctx
 from g3b1_data import settings
-from g3b1_data.elements import ELE_TY_chat_id, ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id, \
-    ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id, EleTy
 from g3b1_data.model import G3Result
 from g3b1_log.log import cfg_logger
 from tg_db import fetch_id
+from trans.data import ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id, \
+    ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id, ELE_TY_tst_run_id, ELE_TY_tst_run_act_id
+from trans.data import ENT_TY_txtlc, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, \
+    ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp
 from trans.data import md_TRANS, eng_TRANS
 from trans.data.integrity import pop_only_dc_fields, replace_lcs, from_row_any, orm, from_row_txtlc_mp, \
     from_row_txt_seq, from_row_txt_seq_it, from_row_tst_tplate, from_row_tst_tplate_it, from_row_tst_tplate_it_ans, \
@@ -41,19 +42,22 @@ def read_setting(setng_dct: dict[str, ...], is_fback=False) -> G3Result:
     if is_fback and 'chat_id' in setng_dct.keys():
         read_setting_w_fback(setng_dct)
     with trans.data.eng_TRANS.connect() as con:
-        g3r = settings.read_setting(con, trans.data.md_TRANS, setng_dct)
+        g3r = G3Result.from_ele_val(
+            settings.read_setting(con, trans.data.md_TRANS, setng_dct))
         return g3r
 
 
 def read_setting_w_fback(setng_dct: dict[str, ...]) -> G3Result:
     with trans.data.eng_TRANS.connect() as con:
-        g3r = settings.read_setting(con, trans.data.md_TRANS, setng_dct)
+        g3r = G3Result.from_ele_val(
+            settings.read_setting(con, trans.data.md_TRANS, setng_dct))
         if g3r.retco == 0 or 'chat_id' not in setng_dct.keys() or \
                 'user_id' not in setng_dct.keys():
             return g3r
         setng_dct_ = setng_dct
         setng_dct_.pop(ELE_TY_chat_id.id)
-        g3r = settings.read_setting(con, trans.data.md_TRANS, setng_dct_)
+        g3r = G3Result.from_ele_val(
+            settings.read_setting(con, trans.data.md_TRANS, setng_dct))
         return g3r
 
 
@@ -178,6 +182,7 @@ def li_onym_by_txtlc(txtlc: Txtlc, src_and_trg: bool = True) -> \
             syn_li.extend(convert_results(g3_res_syn.result))
         if g3_res_ant.retco == 0:
             ant_li.extend(convert_results(g3_res_ant.result))
+        # noinspection PyTypeChecker
         return G3Result(0, (syn_li, ant_li))
 
 
@@ -344,6 +349,13 @@ def sel_txt_seq(txt_seq_id: int, con: Connection = None) -> G3Result[TxtSeq]:
             return wrapped(con)
 
 
+def fin_txt_seq(chat_id: int, txt: str) -> TxtSeq:
+    tbl: Table = md_TRANS.tables[ENT_TY_txt_seq.tbl_name]
+    stmnt = select(tbl).where(tbl.c.chat_id == chat_id, tbl.c.txt == txt)
+    cr: CursorResult = eng_TRANS.execute(stmnt)
+    return from_row_txt_seq(cr.fetchone(), {})
+
+
 def ins_txt_seq(txt_seq: TxtSeq) -> G3Result[TxtSeq]:
     con: Connection
     with eng_TRANS.begin() as con:
@@ -479,7 +491,7 @@ def ins_tst_tplate_item(tst_tplate: TstTplate, i: TstTplateIt) -> \
 
 def ins_tst_tplate(tst_tplate: TstTplate) -> G3Result[TstTplate]:
     if not tst_tplate.user_id:
-        tst_tplate.user_id = G3Context.for_user_id()
+        tst_tplate.user_id = G3Ctx.for_user_id()
     con: Connection
     with eng_TRANS.connect() as con:
         tbl: Table = md_TRANS.tables['tst_tplate']
@@ -714,10 +726,13 @@ def upd_tst_run__end(tst_run: TstRun) -> G3Result[TstRun]:
 
 def sel_tst_run(id_: int) -> G3Result[TstRun]:
     """Sel tst_run"""
+    if not isinstance(id_, int):
+        # noinspection PyUnresolvedReferences
+        id_ = id_.id
     ent: TstRun
     ent_ty = TstRun.ent_ty()
     tbl_name = ent_ty.tbl_name
-    element = EleTy.by_ent_ty(ent_ty)
+    ele_ty = ELE_TY_tst_run_id
     con: Connection
     with eng_TRANS.connect() as con:
         tbl: Table = md_TRANS.tables[tbl_name]
@@ -734,28 +749,27 @@ def sel_tst_run(id_: int) -> G3Result[TstRun]:
         # items
         # 1st level
         tbl_it: Table = md_TRANS.tables['tst_run_act']
-        stmnt = select(tbl_it).where(tbl_it.columns[element.id_] == ent.id_). \
+        stmnt = select(tbl_it).where(tbl_it.columns[ele_ty.id_] == ent.id_). \
             order_by(asc(tbl_it.columns['act_tst']))
         rs = con.execute(stmnt)
         rows_it = rs.fetchall()
         # orm
         for row_it in rows_it:
-            repl_dct: dict[str, Any] = {element.id_: ent}
+            repl_dct: dict[str, Any] = {ele_ty.id_: ent}
             repl_dct = orm(con, tbl_it, row_it, repl_dct)
             ent_it: TstRunAct = from_row_tst_run_act(row_it, repl_dct)
             ent.it_li.append(ent_it)
 
             # items
             # 2nd level
-            ent_it_ty = ent_it.ent_ty()
-            element_it = EleTy.by_ent_ty(ent_it_ty)
+            ele_ty_it = ELE_TY_tst_run_act_id
             tbl_it_it: Table = md_TRANS.tables['tst_run_act_sus']
-            stmnt = select(tbl_it_it).where(tbl_it_it.columns[element_it.id_] == ent_it.id_)
+            stmnt = select(tbl_it_it).where(tbl_it_it.columns[ele_ty_it.id_] == ent_it.id_)
             rs = con.execute(stmnt)
             rows_it_it = rs.fetchall()
             # orm
             for row_it_it in rows_it_it:
-                repl_dct: dict[str, Any] = {element_it.id_: ent_it}
+                repl_dct: dict[str, Any] = {ele_ty_it.id_: ent_it}
                 repl_dct = orm(con, tbl_it_it, row_it_it, repl_dct)
                 ent_it_it: TstRunActSus = \
                     from_row_tst_run_act_sus(row_it_it, repl_dct)

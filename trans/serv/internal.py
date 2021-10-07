@@ -1,15 +1,13 @@
-from typing import Optional
-
 from telegram import Update
 
-import elements
 import settings
 from g3b1_data.elements import *
 from g3b1_data.model import G3Result
 from g3b1_data.settings import chat_user_setting
 from g3b1_serv import tg_reply
 from generic_mdl import TableDef, TgColumn
-from tg_reply import italic, code, bold
+from g3b1_serv.str_utils import italic, code, bold
+from trans.data import ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id
 from trans.data import db, TST_TY_LI
 from trans.data.db import iup_setting
 from trans.data.model import TstTplate, TstTplateIt, Lc, TstTplateItAns, TxtlcMp, TstRun
@@ -84,17 +82,6 @@ def i_iup_setng_tst_tplate_w_it(chat_id: int, user_id: int,
         return g3r
     g3r = iup_setting(chat_user_setting(chat_id, user_id, ELE_TY_tst_tplate_it_id, str(tst_tplate_it.id_)))
     return g3r
-
-
-def i_set_tst_mode_and_notify(upd: Update, chat_id: int, user_id: int, tst_mode: int, read_first=False):
-    if read_first:
-        g3r = db.read_setting(chat_user_setting(chat_id, user_id, elements.ELE_TY_tst_mode))
-        if g3r.retco == 0 and g3r.result == tst_mode:
-            # nothing to do, tst_mode already set accordingly
-            return
-    setng_dct = chat_user_setting(chat_id, user_id, elements.ELE_TY_tst_mode, str(tst_mode))
-    db.iup_setting(setng_dct)
-    tg_reply.send_settings(upd, setng_dct)
 
 
 def i_tst_tplate_by_setng(chat_id: int, user_id: int) -> TstTplate:

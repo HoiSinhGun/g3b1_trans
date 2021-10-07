@@ -6,9 +6,12 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.engine import Row
 
 import integrity
-from elements import ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id
+from trans.data import ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id
 from entities import *
 from g3b1_log.log import cfg_logger
+from trans.data import ENT_TY_txtlc, ENT_TY_txtlc_mp, ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_run, \
+    ENT_TY_tst_run_act, \
+    ENT_TY_tst_run_act_sus
 from trans.data.enums import ActTy, Sus
 from trans.data.model import TstTplate, TstTplateIt, Txtlc, TstTplateItAns, Lc, TxtSeq, TxtSeqIt, TstRun, TstRunAct, \
     TstRunActSus, TxtlcMp
@@ -68,6 +71,10 @@ def from_row_tst_run_act_sus(row: Row, repl_dct=None) -> TstRunActSus:
 
 
 def from_row_txt_seq(row: Row, repl_dct=None) -> TxtSeq:
+    if row is None:
+        # noinspection PyTypeChecker
+        return None
+
     if repl_dct is None:
         repl_dct = {}
 
