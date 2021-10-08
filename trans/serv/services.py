@@ -10,11 +10,9 @@ from g3b1_cfg.tg_cfg import G3Ctx, g3_cmd_by
 from g3b1_log.log import *
 from g3b1_serv import utilities
 from g3b1_ui.model import TgUIC
-from g3b1_ui.ui_mdl import IdxRngSel
 from generic_hdl import send_menu_keyboard
 from icon import I_PREV, I_HINT, I_NEXT, I_ANSWER
 from model import MenuIt, G3Command, Menu
-from serv.services_txt_menu import txt_to_menu_it
 from settings import read_setng, cu_setng
 from subscribe.data import db as subscribe_db
 from subscribe.serv.services import for_user
@@ -70,14 +68,6 @@ def txtlc_cp_txt(lc_pair: tuple[Lc, Lc], txt: str) -> list[TxtlcMp]:
         txt_map: TxtlcMp = find_or_ins_translation(txtlc.txt, lc_pair).result
         txt_map_li.append(txt_map)
     return txt_map_li
-
-
-def xtr_seq_it_li(cur__txt: str, cur__sel_idx_rng: IdxRngSel) -> list[str]:
-    if cur__sel_idx_rng.is_empty():
-        return []
-    menu_it_li: list[MenuIt] = txt_to_menu_it(cur__txt, G3Ctx.g3_cmd, cur__sel_idx_rng.idx_li)
-    seq_it_li: list[str] = [mi.lbl.replace('✔️', '') for mi in menu_it_li if mi.lbl.startswith('✔️')]
-    return seq_it_li
 
 
 def find_or_ins_translation(txt: str, lc_pair: Union[LcPair, tuple[Lc, Lc]]) -> G3Result[TxtlcMp]:

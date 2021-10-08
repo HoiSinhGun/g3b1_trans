@@ -10,7 +10,8 @@ import tg_hdl_txt_menu
 import trans
 import trans.data
 from data.enums import LcPair
-from data.model import TxtSeq, Txtlc
+from trans.data.model import TxtSeq, Txtlc
+from subscribe.data.model import  SetngItKeyVal
 from entities import G3_M_TRANS
 from g3b1_cfg.tg_cfg import sel_g3_m, G3Ctx, g3_cmd_by
 from g3b1_log.log import *
@@ -27,7 +28,7 @@ from sql_utils import dc_dic_2_tbl, tbl_2_str
 from subscribe.data import db as subscribe_db
 from subscribe.data.db import eng_SUB, md_SUB
 from subscribe.serv import services as subscribe_services
-from subscribe.serv.services import for_user
+from subscribe.serv.services import for_user, setng_it_key_val
 from trans.data import ELE_TY_txt_seq_id, ELE_TY_tst_run_id
 from trans.data import ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_run
 from trans.data import eng_TRANS, md_TRANS
@@ -190,15 +191,22 @@ def cmd_menu(upd: Update, ctx: CallbackContext, mi_str: str) -> None:
     mi_str_split = mi_str.split(' ', 1)
     setng_bkey: str = mi_str_split[0].split(':')[0]
     cmd_sfx: str = mi_str_split[0].split(':')[1]
-    cmd_str = mi_str_split[0].replace(':', '_')
-
-    g3_cmd = g3_cmd_by(cmd_str)
-    if len(mi_str_split) == 2:
-        ctx.args = mi_str_split[1].split(' ')
-    f_send = TgUIC.uic.f_send
-    TgUIC.f_send = False
-    g3_cmd.handler(upd, ctx)
-    TgUIC.f_send = f_send
+    it_key_val_li: list[SetngItKeyVal] = setng_it_key_val(setng_bkey, cmd_sfx)
+    if it_key_val_li:
+        cmd_sfx_li: list[str] = [it.setng_it_key.bkey for it in it_key_val_li]
+    else:
+        cmd_sfx_li = [cmd_sfx]
+    for i in cmd_sfx_li:
+        cmd_str = f'{setng_bkey}_{i}'
+        g3_cmd = g3_cmd_by(cmd_str)
+        if len(mi_str_split) == 2:
+            ctx.args = mi_str_split[1].split(' ')
+        f_send = TgUIC.uic.f_send
+        TgUIC.f_send = False
+        g3_ctx_dct = G3Ctx.as_dict()
+        g3_cmd.handler(upd, ctx)
+        G3Ctx.from_dict(g3_ctx_dct)
+        TgUIC.f_send = f_send
 
 
 @generic_hdl.tg_handler()
@@ -268,7 +276,7 @@ def cmd_txt_menu_it_tlt(cur__txt: str, cur__sel_idx_rng: IdxRngSel, cur__lc_pair
 @generic_hdl.tg_handler()
 def cmd_txt_menu_it_ccat(cur__txt: str, cur__sel_idx_rng: IdxRngSel):
     """➕ """
-    new_txt = tg_hdl_txt_menu.it_ccat(cur__txt, cur__sel_idx_rng)
+    new_txt, cur__sel_idx_rng = tg_hdl_txt_menu.it_ccat(cur__txt, cur__sel_idx_rng)
     txt_menu(new_txt, TgUIC.get_send_str_li(), cur__sel_idx_rng)
 
 

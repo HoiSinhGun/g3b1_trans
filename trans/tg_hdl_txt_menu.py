@@ -8,8 +8,8 @@ from elements import ELE_TY_lc, ELE_TY_sel_idx_rng, ELE_TY_txt
 from g3b1_cfg.tg_cfg import G3Ctx
 from g3b1_ui.model import TgUIC
 from g3b1_ui.ui_mdl import IdxRngSel
-from serv.services import xtr_seq_it_li, find_or_ins_translation, txt_13
-from serv.services_txt_menu import txt_menu
+from serv.services import find_or_ins_translation, txt_13
+from serv.services_txt_menu import build_new_txt, xtr_seq_it_li
 from settings import read_setng, cu_setng, iup_setng
 from str_utils import italic
 
@@ -35,7 +35,7 @@ def it_tgl(req__idx_str: str, cur__txt: str, cur__sel_idx_rng: IdxRngSel) -> Idx
 
 def reset(cur__txt: str) -> str:
     iup_setng(cu_setng(ELE_TY_sel_idx_rng))
-    new_txt = cur__txt.replace('|', '').strip()
+    new_txt = cur__txt.replace('[', '').replace(']', '')
     iup_setng(cu_setng(ELE_TY_txt, new_txt))
     return new_txt
 
@@ -69,29 +69,21 @@ def it_tlt(cur__txt: str, cur__sel_idx_rng: IdxRngSel, lc_pair: LcPair):
         TgUIC.uic.send(send_str)
 
 
-def it_ccat(cur__txt: str, cur__sel_idx_rng: IdxRngSel) -> str:
+def it_ccat(cur__txt: str, cur__sel_idx_rng: IdxRngSel) -> (str, IdxRngSel):
     if cur__sel_idx_rng.is_empty():
-        return ''
+        return cur__txt, cur__sel_idx_rng
     sel_idx_li = cur__sel_idx_rng.idx_li
     idx_start = sel_idx_li[0]
     idx_end = sel_idx_li[len(sel_idx_li) - 1]
     check = len(sel_idx_li) - (idx_end - idx_start)
     if check != 1:
         TgUIC.uic.error('To merge select adjacent words!')
-        return ''
-    word_li = cur__txt.split(' ')
-    new_txt = ''
-    for idx, word in enumerate(word_li):
-        if idx == idx_start:
-            new_txt += '|'
-        if new_txt:
-            new_txt += ' '
-        new_txt += word
-        if idx == idx_end:
-            new_txt += '|'
-    iup_setng(cu_setng(ELE_TY_sel_idx_rng))
+        return cur__txt, cur__sel_idx_rng
+    new_txt = build_new_txt(cur__txt, idx_start, idx_end)
+    new_sel_idx_rng = IdxRngSel(str(idx_start))
+    iup_setng(cu_setng(ELE_TY_sel_idx_rng, new_sel_idx_rng.to_idx_rng_str()))
     iup_setng(cu_setng(ELE_TY_txt, new_txt))
-    return new_txt
+    return new_txt, new_sel_idx_rng
 
 
 def rview(req__s_review: str, cur__txtlc: Txtlc, lc2: Lc):
