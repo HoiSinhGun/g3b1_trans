@@ -1,16 +1,21 @@
+import unicodedata
+from random import shuffle
+from typing import Set, List
+
 from telegram import Update
 
 import settings
+from trans.data.model import VocryMpIt
 from g3b1_data.elements import *
 from g3b1_data.model import G3Result
 from g3b1_data.settings import chat_user_setting
 from g3b1_serv import tg_reply
-from generic_mdl import TableDef, TgColumn
 from g3b1_serv.str_utils import italic, code, bold
+from generic_mdl import TableDef, TgColumn
 from trans.data import ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id
 from trans.data import db, TST_TY_LI
 from trans.data.db import iup_setting
-from trans.data.model import TstTplate, TstTplateIt, Lc, TstTplateItAns, TxtlcMp, TstRun
+from trans.data.model import TstTplate, TstTplateIt, Lc, TstTplateItAns, TxtlcMp, TstRun, TxtSeq, Vocry, VocryMpIt
 
 
 def i_sel_tst_tplate_bk(upd: Update, bkey: str) -> Optional[TstTplate]:
@@ -153,3 +158,30 @@ def i_tst_run_q_ans_info(tst_run: TstRun, ans: TstTplateItAns) -> str:
     info_str = ans.tst_tplate_it.build_descr(tst_run=tst_run) + '\n\n'
     info_str += f'Answer for number: {bold(str(ans.ans_num))}'
     return info_str
+
+
+def i_vocry_mp_it_build_li(txt_seq: TxtSeq, vocry: Vocry) -> list[VocryMpIt]:
+    it_set: set[VocryMpIt] = set([VocryMpIt(vocry, txt_seq_it.txtlc_mp) for txt_seq_it in txt_seq.it_li])
+    it_li: list[VocryMpIt] = list(it_set)
+    shuffle(it_li)
+    vocry.mp_it_li.extend(it_li)
+    return it_li
+
+
+def i_remove_accents(input_str):
+    nfkd_form = unicodedata.normalize('NFKD', input_str)
+    return u"".join([c for c in nfkd_form if not unicodedata.combining(c)])
+
+
+def i_len_vn(s: str) -> int:
+    s = s.lower()
+    s = i_remove_accents(s)
+    # for char in ['ở', 'ở' 'ọ', 'ơ', 'ợ', 'ớ']:
+    #     s = s.replace(char, 'o')
+    # for char in ['ữ', 'ư', 'ứ']:
+    #     s = s.replace(char, 'u')
+    # for char in ['ả', 'ậ', 'ạ']:
+    #     s = s.replace(char, 'a')
+
+    return len(s)
+

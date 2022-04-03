@@ -1,11 +1,14 @@
-from random import shuffle
+import urllib.parse
 from typing import Callable, Any
 
 from telegram import ParseMode, Message
+from underthesea import sent_tokenize, word_tokenize
 
 import tg_db
 import trans.data
 from config.model import TransConfig
+from subscribe.data.model import ENT_TY_g3_file
+from entities import G3_M_SUBSCRIBE, EntId
 from g3b1_cfg.tg_cfg import G3Ctx, g3_cmd_by
 from g3b1_log.log import *
 from g3b1_serv import utilities
@@ -19,17 +22,23 @@ from subscribe.serv.services import for_user
 from tg_reply import cmd_err
 from trans.data import ELE_TY_txt_seq_id, ELE_TY_tst_run_id
 from trans.data import ENT_TY_tst_run, ENT_TY_txt_seq
-from trans.data.enums import ActTy, Sus, LcPair
-from trans.data.model import Txtlc, TxtlcOnym, TxtSeq, TxtSeqIt
+from trans.data.db import ins_txtlc, ins_vocry, fin_txtlc_file_of, fin_txtlc_file
+from trans.data.enums import ActTy, Sus, LcPair, TyLcPair
+from trans.data.model import Learned
+from subscribe.data.model import G3File
+from trans.data.model import Txtlc, TxtlcOnym, TxtSeqIt, TxtlcFile
 from trans.serv.internal import *
-from utilities import upd_extract_chat_user_id, str_uncapitalize
+from utilities import upd_extract_chat_user_id, str_uncapitalize, utc_to_vn_dt_s
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
 
-def reg_user_if_new(chat_id: int, user_id: int):
+def reg_user_if_new():
+    chat_id, user_id = G3Ctx.cu_tup()
     tg_db.externalize_chat_id(trans.data.BOT_BKEY_TRANS, chat_id)
     tg_db.externalize_user_id(trans.data.BOT_BKEY_TRANS, user_id)
+    tg_db.externalize_chat_id(G3_M_SUBSCRIBE, chat_id)
+    tg_db.externalize_user_id(G3_M_SUBSCRIBE, user_id)
     # db.ins_user_setting_default(user_id)
 
 
@@ -48,6 +57,13 @@ def find_or_ins_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) ->
     return txt_mapping
 
 
+def find_or_ins_txtlc(txt: str, lc: Lc) -> Txtlc:
+    if not (txtlc_find := fiby_txt_lc(txt, lc)):
+        # noinspection PyTypeChecker,PyArgumentList
+        return ins_txtlc(Txtlc(txt, lc)).result
+    return txtlc_find
+
+
 def find_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) -> TxtlcMp:
     """Find text in DB and if exist return it along with translation of translator for lc2"""
     txtlc_find = fiby_txt_lc(txt, lc)
@@ -61,6 +77,35 @@ def find_txtlc_with_txtlc2(txt: str, lc: Lc, lc2: Lc, translator=None) -> TxtlcM
     return txt_mapping
 
 
+def google_link(txt: str, from_lc: str = 'vi') -> str:
+    txt_quoted = urllib.parse.quote(txt)
+    link_s = f'https://translate.google.com/?sl={from_lc}&tl=en&text={txt_quoted}&op=translate'
+    full_link = f'<a href="{link_s}">{txt}</a>'
+    return full_link
+
+
+def vdict_link(txt: str) -> str:
+    txt_quoted = urllib.parse.quote(txt)
+    link_s = f'https://vdict.com/{txt_quoted},2,0,0.html'
+    full_link = f'<a href="{link_s}">{txt}</a>'
+    return full_link
+
+
+def babla_link(txt: str) -> str:
+    txt_quoted = urllib.parse.quote(txt)
+    link_s = f'https://en.bab.la/dictionary/vietnamese-english/{txt_quoted}'
+    full_link = f'<a href="{link_s}">{txt}</a>'
+    return full_link
+
+
+def all_links(txt: str) -> str:
+    return f'{google_link(txt)}\n{vdict_link(txt)}\n{babla_link(txt)}\n'
+
+
+def fin_txtlc_file_by_lc(lc: Lc) -> list[TxtlcFile]:
+    return fin_txtlc_file(lc).result
+
+
 def txtlc_cp_txt(lc_pair: tuple[Lc, Lc], txt: str) -> list[TxtlcMp]:
     txtlc_li = db.txtlc_txt_cp(txt, lc_pair[0])
     txt_map_li: list[TxtlcMp] = []
@@ -68,6 +113,10 @@ def txtlc_cp_txt(lc_pair: tuple[Lc, Lc], txt: str) -> list[TxtlcMp]:
         txt_map: TxtlcMp = find_or_ins_translation(txtlc.txt, lc_pair).result
         txt_map_li.append(txt_map)
     return txt_map_li
+
+
+def translate_txt(txt: str, lc_s: str, lc2_s: str) -> str:
+    return find_or_ins_translation(txt, TyLcPair(Lc.fin(lc_s), Lc.fin(lc2_s))).result.txtlc_trg.txt
 
 
 def find_or_ins_translation(txt: str, lc_pair: Union[LcPair, tuple[Lc, Lc]]) -> G3Result[TxtlcMp]:
@@ -157,6 +206,44 @@ def txt_seq_03(upd, txt_seq: TxtSeq):
     i_send_txtlc_mp_li(upd, [it.txtlc_mp for it in txt_seq.it_li])
 
 
+def fl_of_txllc(txtlc: Txtlc) -> Optional[str]:
+    if not txtlc:
+        return
+    txtlc_file_li: list[TxtlcFile] = fin_txtlc_file_of(txtlc).result
+    if not txtlc_file_li:
+        return
+    txtlc_file: TxtlcFile = txtlc_file_li[0]
+    g3_file: G3File = tg_db.sel_ent_ty(EntId(ENT_TY_g3_file, txtlc_file.file_id)).result
+    fl = g3_file.get_path()
+    # Audio(g3_file.file_id, g3_file.file_unique_id, g)
+
+
+def utc_txt_str(text: str, f_utc=True) -> str:
+    if f_utc:
+        sent_li: list = sent_tokenize(text)
+        res_s: str = ''
+        for sent in sent_li:
+            # if res_s:
+            #     res_s = res_s + '\n'
+            for word in word_tokenize(sent):
+                if res_s:
+                    res_s = res_s + '|'
+                res_s = res_s + word
+    else:
+        res_s = text
+    seq_str = '||' + res_s
+    seq_str = TxtSeq.smart_format(seq_str, False)
+    return seq_str
+
+
+def utc_txt_seq(text: str, f_utc=True) -> TxtSeq:
+    seq_str = utc_txt_str(text, f_utc)
+    lc_pair = read_setng_lc_pair()
+    txt_seq: TxtSeq = txt_seq_01(lc_pair, seq_str)
+    write_to_setng(txt_seq)
+    return txt_seq
+
+
 def conv_onym_str_li(src_txt: str, trg_txt: str) -> (list[str], list[str], list[str], list[str]):
     src_syn_li: list = []
     src_ant_li: list = []
@@ -238,6 +325,7 @@ def i_reply_str_from_txt_map_li_srcus(*p_li, **kw_p_li) -> str:
 
 
 def i_reply_str_from_txt_map_li(user_id: int, idx_src_syn_last: int, lc: Lc, lc2: Lc, txt_map_li: list[TxtlcMp],
+                                eff_msg: Message,
                                 verbosity='') -> str:
     c = '='
     idx_all_last = len(txt_map_li) - 1
@@ -277,6 +365,10 @@ def i_reply_str_from_txt_map_li(user_id: int, idx_src_syn_last: int, lc: Lc, lc2
                 reply_str += f'{bold("Antonyms")}: {ant_str}'
     else:
         reply_str = trg_str
+    if eff_msg and eff_msg.forward_from:
+        reply_str = f'{utc_to_vn_dt_s(eff_msg.forward_date)} {bold(eff_msg.forward_from.full_name)} ' \
+                    f'(@{eff_msg.forward_from.username}, {eff_msg.forward_from.id})\n' \
+                    f'{reply_str}'
     return reply_str
 
 
@@ -307,7 +399,7 @@ def hdl_cmd_languages(upd: Update):
 
 
 def i_cmd_lc(upd: Update, chat_id, user_id, lc: str, is_hdl_retco=True, fallback: str = None):
-    reg_user_if_new(chat_id, user_id)
+    reg_user_if_new()
     if not lc:
         tg_reply.cmd_p_req(upd, 'lc')
         return
@@ -325,7 +417,7 @@ def i_cmd_lc(upd: Update, chat_id, user_id, lc: str, is_hdl_retco=True, fallback
 
 
 def i_cmd_lc2(upd: Update, chat_id, user_id, lc2_str: str, is_handle_retco=True, fallback: str = None):
-    reg_user_if_new(chat_id, user_id)
+    reg_user_if_new()
     if not lc2_str:
         tg_reply.cmd_p_req(upd, 'lc')
         hdl_cmd_languages(upd)
@@ -408,6 +500,20 @@ def i_tst_qt_mode_edit(tst_tplate: TstTplate, qt_str: str) -> TstTplateIt:
     return tst_tplate_it
 
 
+def ins_learned(text: str) -> Optional[Learned]:
+    lc_pair = read_setng_lc_pair()
+    txt_map: TxtlcMp = find_or_ins_translation(text, lc_pair).result
+    learned = Learned(G3Ctx.for_user_id(), txt_map.txtlc_src, True)
+    g3r = tg_db.ins_ent_ty(learned)
+    if g3r.retco == 0:
+        learned = g3r.result
+        TgUIC.uic.send(f'{learned.id}: {learned.txtlc.id_}-{learned.txtlc.txt}')
+        return learned
+    else:
+        TgUIC.uic.err_cmd_fail()
+        return
+
+
 def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, lc_pair: tuple[Lc, Lc],
                         reply_string_builder: Callable = i_reply_str_from_txt_map_li_v,
                         is_send_reply=True) -> list[TxtlcMp]:
@@ -444,6 +550,8 @@ def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, 
     else:
         src_txt = text
 
+    if src_txt.find(':::') > 0:
+        src_txt = src_txt.split(':::')[1]
     # if src_txt:
     #    src_txt = src_txt.lower()
     # if trg_txt:
@@ -487,17 +595,16 @@ def hdl_cmd_reply_trans(upd: Update, src_msg: Message, user_id: int, text: str, 
             txt_map_li.append(g3r.result)
 
     idx_src_syn_last = len(src_syn_li) - 1
-    reply_str = reply_string_builder(user_id, idx_src_syn_last, lc, lc2, txt_map_li)
+    reply_str = reply_string_builder(user_id, idx_src_syn_last, lc, lc2, txt_map_li, upd.effective_message)
     ins_onyms_from_str_li(lc, src_syn_li, str(user_id), 'syn')
     ins_onyms_from_str_li(lc, src_ant_li, str(user_id), 'ant')
     if is_send_reply:
         # upd.effective_message.reply_html(reply_str, reply_to_message_id=reply_msg_id)
-        upd.effective_message.bot.send_message(
-            chat_id=upd.effective_chat.id,
-            text=reply_str,
-            parse_mode=ParseMode.HTML,
-            timeout=10.0
-        )
+        sent_msg = TgUIC.uic.send(reply_str)
+        tg_db.upd_chat_last_msg(sent_msg.chat_id, sent_msg.message_id)
+        if isinstance(sent_msg, Message):
+            tg_db.synchronize_from_message(sent_msg, G3Ctx.g3_m_str, False)
+
         # upd.effective_message.reply_html(reply_str, reply_to_message_id=None)
     return txt_map_li
 
@@ -588,8 +695,8 @@ def read_lc_settings_w_fback(chat_id: int, user_id: int) -> (str, str):
     return lc, lc2
 
 
-def read_setng_lc_pair() -> (Lc, Lc):
-    return Lc.fin(read_setng(ELE_TY_lc).val), Lc.fin(read_setng(ELE_TY_lc2).val)
+def read_setng_lc_pair() -> TyLcPair:
+    return TyLcPair(Lc.fin(read_setng(ELE_TY_lc).val), Lc.fin(read_setng(ELE_TY_lc2).val))
 
 
 def tst_new_qt(tst_tplate: TstTplate, qt_str: str) -> TstTplateIt:
@@ -713,6 +820,12 @@ def write_to_setng(ent: Any) -> G3Result:
         return G3Result(4)
     return settings.ent_to_setng(
         upd_extract_chat_user_id(), ent)
+
+
+def write_to_c_setng(ent: Any) -> G3Result:
+    if not ent:
+        return G3Result(4)
+    return settings.ent_to_setng((G3Ctx.chat_id(), 0), ent)
 
 
 # noinspection PyDefaultArgument
@@ -880,3 +993,7 @@ def tst_run_tfnsh(upd: Update, tst_run: TstRun):
     db.upd_tst_run__end(tst_run)
     tst_run = db.sel_tst_run(tst_run.id_).result
     tg_reply.send(upd, f'Start: {tst_run.sta_tst}\nEnd: {tst_run.end_tst}')
+
+
+def vocry_01(vocry: Vocry) -> Vocry:
+    return ins_vocry(vocry).result

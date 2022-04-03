@@ -1,40 +1,65 @@
 """Trans commands """
+import codecs
+import os
 import re
 from builtins import int
 
+import requests
+from bs4 import Tag
+# noinspection PyPackageRequirements
+from sqlalchemy.engine import Row
 from telegram import Update, Message
+# noinspection PyPackageRequirements
 from telegram.ext import CallbackContext
+# noinspection PyPackageRequirements
+from underthesea import sent_tokenize, word_tokenize
 
 import generic_hdl
+import tg_hdl_sta_menu
 import tg_hdl_txt_menu
 import trans
 import trans.data
-from data.enums import LcPair
-from trans.data.model import TxtSeq, Txtlc
-from subscribe.data.model import  SetngItKeyVal
-from entities import G3_M_TRANS
+from constants import env_g3b1_dir
+from entities import G3_M_TRANS, EntId
 from g3b1_cfg.tg_cfg import sel_g3_m, G3Ctx, g3_cmd_by
 from g3b1_log.log import *
 from g3b1_serv import utilities
 from g3b1_ui.model import TgUIC
 from g3b1_ui.ui_mdl import IdxRngSel
 from generic_hdl import send_ent_ty_keyboard
+from generic_mdl import ele_ty_by_id
 from model import Menu
 from serv.services import hdl_cmd_languages, i_cmd_lc, i_cmd_lc2, i_cmd_lc_view, hdl_cmd_setng_cmd_prefix, \
     txt_seq_03, i_tst_qt_mode_edit, cmd_string, tst_tplate_it_ans_01, txt_seq_01, \
-    write_to_setng, init_4_kb
-from serv.services_txt_menu import txt_menu
+    write_to_setng, init_4_kb, find_or_ins_translation, find_or_ins_txtlc, read_setng_lc_pair, translate_txt, \
+    utc_txt_seq, write_to_c_setng, ins_learned, fin_txtlc_file_by_lc
+from serv.services_story_menu import read_txt_story, story_by_setng, story_it_by_setng
+from serv.services_txt_menu import txt_menu, single_selected_word, build_word_li
+from settings import ent_by_setng
 from sql_utils import dc_dic_2_tbl, tbl_2_str
 from subscribe.data import db as subscribe_db
 from subscribe.data.db import eng_SUB, md_SUB
+from subscribe.data.model import SetngItKeyVal, G3File, Ctx
 from subscribe.serv import services as subscribe_services
-from subscribe.serv.services import for_user, setng_it_key_val
-from trans.data import ELE_TY_txt_seq_id, ELE_TY_tst_run_id
-from trans.data import ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_run
+from subscribe.serv.services import for_user, setng_it_key_val, sel_g3_file, ctx_start, ctx_stop, send_aud_g3_file, \
+    send_cmd_audio
+from tg_db import ins_ent_ty, sel_ent_ty, sel_message
+from tg_hdl_story_menu import story_01, story_03, story_02, story_it_2n, story_it_01, story_it_02_header, story_25, \
+    story_it_aud, story_from_lesson, story_from_txt_li, story_menu, story_it_voc
+from tg_hdl_vocry_menu import vocry_tst, utc_vocry, story_vocry
+from trans.data import ELE_TY_txt_seq_id, ELE_TY_tst_run_id, ELE_TY_vocry_id, ELE_TY_story_id, ELE_TY_story_it_id, \
+    ELE_TY_story_show_text
+from trans.data import ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_run, ENT_TY_vocry, ENT_TY_txtlc_file
 from trans.data import eng_TRANS, md_TRANS
+from trans.data.db import sel_vocry, sel_txt_seq
+from trans.data.enums import LcPair
+from trans.data.model import Txtlc, TxtlcFile, Learned, Story, StoryIt
 from trans.serv import internal
 from trans.serv import services
 from trans.serv.internal import *
+from ui.msg import send
+# noinspection PyPackageRequirements,PyProtectedMember
+from utilities import now_for_sql
 
 logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
@@ -42,6 +67,21 @@ logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 @generic_hdl.tg_handler()
 def cmd_go2():
     send_ent_ty_keyboard(ENT_TY_tst_run)
+
+
+@generic_hdl.tg_handler()
+def cmd_dbg_src_bot_msg(src_bot_msg: Message):
+    TgUIC.uic.send(f'{src_bot_msg.text} (message_id:{src_bot_msg.message_id})')
+
+
+@generic_hdl.tg_handler()
+def cmd_g3fl_aud(req__g3_file_id: str, fl_name: str):
+    send_aud_g3_file(int(req__g3_file_id), fl_name)
+
+
+@generic_hdl.tg_handler()
+def cmd_audio(req__cmd_line: str):
+    send_cmd_audio(req__cmd_line)
 
 
 @generic_hdl.tg_handler()
@@ -87,6 +127,38 @@ def cmd_subscribe(upd: Update, chat_id: int, user_id: int, subst_user_id: int = 
 
 
 @generic_hdl.tg_handler()
+def cmd_area_set(req__area_key: str):
+    setng = settings.cu_setng(ELE_TY_area, req__area_key)
+    settings.iup_setng(setng)
+    TgUIC.uic.cmd_sccs()
+
+
+@generic_hdl.tg_handler()
+def cmd_setng(req__ele_ty_id: str, new_val: str):
+    ele_ty: EleTy = ele_ty_by_id(req__ele_ty_id, G3Ctx.g3_m_str)
+    f_chat_setng = False
+    if ele_ty in [ELE_TY_story_show_text, ELE_TY_story_id, ELE_TY_story_it_id]:
+        f_chat_setng = True
+    if not ele_ty:
+        TgUIC.uic.err_setng_miss(EleTy(req__ele_ty_id, 'UNKNOWN'))
+        return
+    if new_val is None or new_val == '':
+        ele_val: EleVal = settings.read_setng(ele_ty, f_chat_setng)
+        if f_chat_setng:
+            setng_d = settings.c_setng(ele_ty, ele_val.val)
+        else:
+            setng_d = settings.cu_setng(ele_ty, ele_val.val)
+        TgUIC.uic.send_settings(setng_d)
+        return
+    if f_chat_setng:
+        setng_d = settings.c_setng(ele_ty, new_val)
+    else:
+        setng_d = settings.cu_setng(ele_ty, new_val)
+    iup_setting(setng_d)
+    TgUIC.uic.send_settings(setng_d)
+
+
+@generic_hdl.tg_handler()
 def cmd_cmd_default(upd: Update, chat_id: int, cmd_set: str):
     """Set the default cmd for messages without leading command.
     Eg /cmd_default t, use without arguments to view the current setting"""
@@ -122,6 +194,22 @@ def cmd_setng_send_onyms(upd: Update, chat_id: int, user_id: int):
 def cmd_setng_cmd_prefix(upd: Update, cmd_prefix: str):
     """Set the cmd prefix which replaces triple dot"""
     hdl_cmd_setng_cmd_prefix(upd, cmd_prefix)
+
+
+@generic_hdl.tg_handler()
+def cmd_ctx_start(req__title: str, cur__ctx: Ctx):
+    if cur__ctx:
+        TgUIC.uic.error(f'Context {cur__ctx.title} ({cur__ctx.id}) active! Call /ctx_stop first')
+        return
+    ctx_start(req__title)
+
+
+@generic_hdl.tg_handler()
+def cmd_ctx_stop(cur__ctx: Ctx):
+    if not cur__ctx:
+        TgUIC.uic.error(f'No context active!')
+        return
+    ctx_stop(cur__ctx)
 
 
 @generic_hdl.tg_handler()
@@ -191,11 +279,12 @@ def cmd_menu(upd: Update, ctx: CallbackContext, mi_str: str) -> None:
     mi_str_split = mi_str.split(' ', 1)
     setng_bkey: str = mi_str_split[0].split(':')[0]
     cmd_sfx: str = mi_str_split[0].split(':')[1]
-    it_key_val_li: list[SetngItKeyVal] = setng_it_key_val(setng_bkey, cmd_sfx)
-    if it_key_val_li:
-        cmd_sfx_li: list[str] = [it.setng_it_key.bkey for it in it_key_val_li]
-    else:
-        cmd_sfx_li = [cmd_sfx]
+    cmd_sfx_li = [cmd_sfx]
+    if setng_bkey == 'txt_menu':
+        it_key_val_li: list[SetngItKeyVal] = setng_it_key_val(setng_bkey, cmd_sfx)
+        if it_key_val_li:
+            cmd_sfx_li: list[str] = [it.setng_it_key.bkey for it in it_key_val_li]
+
     for i in cmd_sfx_li:
         cmd_str = f'{setng_bkey}_{i}'
         g3_cmd = g3_cmd_by(cmd_str)
@@ -210,9 +299,49 @@ def cmd_menu(upd: Update, ctx: CallbackContext, mi_str: str) -> None:
 
 
 @generic_hdl.tg_handler()
+def cmd_sta_menu_t(upd: Update, user_id: int, text: str):
+    lc_pair = services.read_setng_lc_pair()
+    text = text.replace('\n', ' ')
+    # noinspection PyTypeChecker
+    services.hdl_cmd_reply_trans(upd, None, user_id, text, lc_pair,
+                                 reply_string_builder=services.i_reply_str_from_txt_map_li)
+
+
+@generic_hdl.tg_handler()
+def cmd_sta_menu_lc(lc_s: str):
+    tg_hdl_sta_menu.lc(Lc.fin(lc_s))
+
+
+@generic_hdl.tg_handler()
+def cmd_sta_menu_lc2(lc_s: str):
+    tg_hdl_sta_menu.lc2(Lc.fin(lc_s))
+
+    lc_pair = read_setng_lc_pair()
+    send(
+        f'Please send a message in the language: {lc_pair.lc.value} ({lc_pair.lc.flag()})\n\n'
+        f'And I will translate to the language {lc_pair.lc2.value} ({lc_pair.lc2.flag()}).',
+        translate_txt
+    )
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_seq(cont_str: str, cur__txt_seq: TxtSeq, cur__txt_seq_it_num: str):
+    text = tg_hdl_txt_menu.seq(cont_str, cur__txt_seq, cur__txt_seq_it_num)
+    txt_menu(text)
+
+
+@generic_hdl.tg_handler()
 def cmd_txt_menu_rnd(lc_str: str):
     rnd_txt = tg_hdl_txt_menu.rnd(lc_str)
     txt_menu(rnd_txt)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu(src_bot_msg: Message, text: str):
+    if not text:
+        text = src_bot_msg.text
+    text = tg_hdl_txt_menu.default(text)
+    txt_menu(text)
 
 
 @generic_hdl.tg_handler()
@@ -247,6 +376,42 @@ def cmd_txt_menu_rview_no(cur__txtlc: Txtlc, cur__lc2: Lc):
 
 
 @generic_hdl.tg_handler()
+def cmd_txt_menu_story():
+    """◀ """
+    TgUIC.f_send = True
+    cur__story = story_by_setng()
+    # bot_msg: Message =
+    story_menu(cur__story.user_id, cur__story.bkey)
+    # G3Ctx.ctx.bot.pin_chat_message(G3Ctx.chat_id(), bot_msg.message_id)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_learned(cur__txt: str):
+    """👍 """
+    TgUIC.f_send = True
+    word_li = build_word_li(cur__txt)
+    for word in word_li:
+        ins_learned(word)
+    cur__story = story_by_setng()
+    # bot_msg: Message = \
+    story_menu(cur__story.user_id, cur__story.bkey)
+    # G3Ctx.ctx.bot.pin_chat_message(G3Ctx.chat_id(), bot_msg.message_id)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_it_learned(cur__txt: str, cur__sel_idx_rng: IdxRngSel):
+    """👍 """
+    TgUIC.f_send = True
+    if not (word := single_selected_word(cur__txt, cur__sel_idx_rng)):
+        return
+    ins_learned(word)
+    # Exactly one word is selected:
+    idx_s = str(cur__sel_idx_rng.idx_li[0])
+    sel_idx_rng = tg_hdl_txt_menu.it_tgl(idx_s, cur__sel_idx_rng)
+    txt_menu(cur__txt, TgUIC.get_send_str_li(), sel_idx_rng)
+
+
+@generic_hdl.tg_handler()
 def cmd_txt_menu_tlt(cur__txtlc: Txtlc, cur__lc2: Lc, cur__txt: str, cur__sel_idx_rng: IdxRngSel):
     """❓ """
     tg_hdl_txt_menu.tlt(cur__txtlc, cur__lc2)
@@ -255,7 +420,7 @@ def cmd_txt_menu_tlt(cur__txtlc: Txtlc, cur__lc2: Lc, cur__txt: str, cur__sel_id
 
 @generic_hdl.tg_handler()
 def cmd_txt_menu_it_tgl(req__idx_str: str, cur__txt: str, cur__sel_idx_rng: IdxRngSel):
-    sel_idx_rng = tg_hdl_txt_menu.it_tgl(req__idx_str, cur__txt, cur__sel_idx_rng)
+    sel_idx_rng = tg_hdl_txt_menu.it_tgl(req__idx_str, cur__sel_idx_rng)
     txt_menu(cur__txt, TgUIC.get_send_str_li(), sel_idx_rng)
 
 
@@ -281,8 +446,27 @@ def cmd_txt_menu_it_ccat(cur__txt: str, cur__sel_idx_rng: IdxRngSel):
 
 
 @generic_hdl.tg_handler()
-def cmd_txt_13(txt: str):
+def cmd_txt_menu_fwd(cur__txt_seq: TxtSeq, cur__txt_seq_it_num: str):
+    """▶ """
+    TgUIC.f_send = True
+    text = tg_hdl_txt_menu.fwd_prv(cur__txt_seq, int(cur__txt_seq_it_num), 1)
+    txt_menu(text)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_menu_prv(cur__txt_seq: TxtSeq, cur__txt_seq_it_num: str):
+    """◀ """
+    TgUIC.f_send = True
+    text = tg_hdl_txt_menu.fwd_prv(cur__txt_seq, int(cur__txt_seq_it_num), -1)
+    txt_menu(text)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_13(src_bot_msg: Message, txt: str):
     """Find %txt% in the dictionary of the users current source language (check with .lc.view)"""
+    if not txt and src_bot_msg:
+        txt = src_bot_msg.text
+
     if not txt:
         TgUIC.uic.err_p_miss(ELE_TY_txt)
         return
@@ -320,6 +504,17 @@ def cmd_t(upd: Update, src_msg: Message, user_id: int, text: str):
 
 
 @generic_hdl.tg_handler()
+def cmd_t__save(upd: Update, src_msg: Message, user_id: int, text: str):
+    """ Translate the last message or the replied to message to text.
+    If text is empty, the bot will translate itself.
+    Save the bot message reply
+    """
+    lc_pair = services.read_setng_lc_pair()
+    services.hdl_cmd_reply_trans(upd, src_msg, user_id, text, lc_pair,
+                                 reply_string_builder=services.i_reply_str_from_txt_map_li)
+
+
+@generic_hdl.tg_handler()
 def cmd_t__v(upd: Update, src_msg: Message, user_id: int, text: str):
     """ Translate the replied to message to trg_text
     """
@@ -329,7 +524,7 @@ def cmd_t__v(upd: Update, src_msg: Message, user_id: int, text: str):
 
 
 @generic_hdl.tg_handler()
-def cmd_t__b(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: str):
+def cmd_t__b(upd: Update, src_msg: Message, user_id: int, text: str):
     """ Translate the replied to message to trg_text
     """
     lc_pair = services.read_setng_lc_pair()
@@ -338,12 +533,32 @@ def cmd_t__b(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: st
 
 
 @generic_hdl.tg_handler()
-def cmd_t__u(upd: Update, src_msg: Message, chat_id: int, user_id: int, text: str):
+def cmd_t_bot(upd: Update, src_bot_msg: Message, user_id: int, text: str):
+    """ Translate the replied to / last bot msg message to trg_text
+        If text is empty, the bot will translate itself.
+    """
+    lc_pair = services.read_setng_lc_pair()
+    services.hdl_cmd_reply_trans(upd, src_bot_msg, user_id, text, lc_pair,
+                                 reply_string_builder=services.i_reply_str_from_txt_map_li_srcus)
+
+
+@generic_hdl.tg_handler()
+def cmd_t__u(upd: Update, src_msg: Message, user_id: int, text: str):
     """ Translate the replied to message to trg_text
     """
     lc_pair = services.read_setng_lc_pair()
     services.hdl_cmd_reply_trans(upd, src_msg, user_id, text, lc_pair,
                                  reply_string_builder=services.i_reply_str_from_txt_map_li_srcus)
+
+
+@generic_hdl.tg_handler()
+def cmd_t_sub__ta(src_msg: Message, user_id: int, text: str):
+    """ The bot translates the last message or the replied to message. In the result toi/ban will be
+    replaced by anh/em
+    """
+    lc, lc2 = services.read_setng_lc_pair()
+    services.hdl_cmd_reply_trans(G3Ctx.upd, src_msg, user_id, text, (lc, lc2),
+                                 reply_string_builder=services.i_reply_str_from_txt_map_li_repl_ta)
 
 
 @generic_hdl.tg_handler()
@@ -361,13 +576,72 @@ def cmd_t__r(upd: Update, src_msg: Message, user_id: int, trg_text: str):
 
 
 @generic_hdl.tg_handler()
-def cmd_repl__ta(upd: Update, src_msg: Message, user_id: int):
-    """ The bot translates the last message or the replied to message. In the result toi/ban will be
-    replaced by anh/em
-    """
+def cmd_l(src_bot_msg: Message, text: str):
+    """ Mark message as learned vocabulary"""
+    if not text:
+        text = src_bot_msg.text
+    ins_learned(text)
+    vocry_tst()
+
+
+@generic_hdl.tg_handler()
+def cmd_ll(src_bot_msg: Message, user_id: int, text: str):
+    """ Mark message as learned vocabulary"""
     lc_pair = services.read_setng_lc_pair()
-    services.hdl_cmd_reply_trans(upd, src_msg, user_id, '', lc_pair,
-                                 reply_string_builder=services.i_reply_str_from_txt_map_li_repl_ta)
+    if not text:
+        text = src_bot_msg.text
+    txt_map: TxtlcMp = find_or_ins_translation(text, lc_pair).result
+    learned = Learned(user_id, txt_map.txtlc_src, True)
+    g3r = ins_ent_ty(learned)
+    if g3r.retco == 0:
+        learned = g3r.result
+        TgUIC.uic.send(f'{learned.id}: {learned.txtlc.id_}-{learned.txtlc.txt}')
+    else:
+        TgUIC.uic.err_cmd_fail()
+
+
+@generic_hdl.tg_handler()
+def cmd_txtlc_file_33(cur__lc: Lc):
+    txtlc_file_li: list[TxtlcFile] = fin_txtlc_file_by_lc(cur__lc)
+    for txtlc_file in txtlc_file_li:
+        g3_file: G3File = sel_g3_file(txtlc_file.file_id)
+        TgUIC.uic.send_audio(g3_file.get_path(), txtlc_file.txtlc.txt, f'User {txtlc_file.user_id}')
+
+
+@generic_hdl.tg_handler()
+def cmd_txtlc_file_sr(cur__lc: Lc, req__g3_file_id: str):
+    txtlc_file: TxtlcFile = sel_ent_ty(EntId(ENT_TY_txtlc_file, int(req__g3_file_id))).result
+    if txtlc_file:
+        TgUIC.uic.send(f'txtlc_file_id: {txtlc_file.id} // g3_file_id: {txtlc_file.file_id}')
+        req__g3_file_id = txtlc_file.file_id
+    g3_file: G3File = sel_g3_file(int(req__g3_file_id))
+    # if not (txtlc_file_li := fin_txtlc_file_of(g3_file=g3_file)):
+    #     TgUIC.uic.err_no_data()
+    send_cmd_audio(f'sr_vn {g3_file.get_path()}')
+
+
+@generic_hdl.tg_handler()
+def cmd_txtlc_file_01(src_bot_msg: Message, cur__lc: Lc, req__g3_file_id: str):
+    text = src_bot_msg.text
+    if text.find(':::') > 0:
+        text = text.split(':::')[1]
+    txtlc = find_or_ins_txtlc(text, cur__lc)
+    g3_file: G3File = sel_g3_file(int(req__g3_file_id))
+    txtlc_file: TxtlcFile = ins_ent_ty(TxtlcFile(txtlc, g3_file.id, G3Ctx.for_user_id())).result
+    # bot_message: Message =
+    TgUIC.uic.send(f'txtlc_id:{txtlc.id_} /// txtlc_file_id:{txtlc_file.id}')
+    row: Row = sel_message(src_bot_msg.chat, src_bot_msg.message_id).result
+    if row['sub_module'] == 'story':
+        story_it_2n(1)
+    # if not bot_message or not isinstance(bot_message, Message):
+    #     return
+    # tg_db.synchronize_from_message(bot_message, G3Ctx.g3_m_str, False)
+
+    # setng_ele_val: EleVal = read_setng(ELE_TY_cmd_prefix)
+    # if setng_ele_val.val and setng_ele_val.val == '.story.':
+    #     if not (story_it := story_it_2n(1)):
+    #         return
+    #     story_03(story_it.story, False)
 
 
 @generic_hdl.tg_handler()
@@ -400,6 +674,12 @@ def cmd_text_new(req__txt: str):
 
 
 @generic_hdl.tg_handler()
+def cmd_utc_txt_seq(text: str):
+    txt_seq = utc_txt_seq(text)
+    TgUIC.uic.send(f'(txt_seq_id:{txt_seq.id_})\n{txt_seq.txt}')
+
+
+@generic_hdl.tg_handler()
 def cmd_txt_seq_01(upd: Update, src_msg: Message, text: str):
     """ Creates a sequence of the text by splitting at the operator |
         The texts will be translated by the bot.
@@ -414,12 +694,44 @@ def cmd_txt_seq_01(upd: Update, src_msg: Message, text: str):
 
 
 @generic_hdl.tg_handler()
+def cmd_txt_seq_01_fl(cur__area: str, req__fl_name: str):
+    fl_s = os.path.join(env_g3b1_dir, cur__area, req__fl_name)
+    with codecs.open(fl_s, encoding='utf-8') as f:
+        line_li: list[str] = f.readlines()
+    src_str = '||' + '\n'.join(line_li)
+    txt = TxtSeq.smart_format(src_str)
+    lc_pair = services.read_setng_lc_pair()
+
+    txt_seq: TxtSeq = txt_seq_01(lc_pair, txt)
+    write_to_setng(txt_seq)
+    txt_seq_03(G3Ctx.upd, txt_seq)
+
+
+@generic_hdl.tg_handler()
+def cmd_txt_seq_01_fl_sim(cur__area: str, cur__lc: Lc, req__fl_name: str):
+    """
+        Creates sequences of the content of the file by splitting at the operator |
+        The texts will be translated by the bot.
+        The results are written into the file {fl_name}_txt_seq.txt
+    """
+    fl_s = os.path.join(env_g3b1_dir, cur__area, req__fl_name)
+    res_li = read_txt_story(fl_s, cur__lc)
+    trg_fl_s = f'{os.path.splitext(fl_s)[0]}_utc.txt'
+    if os.path.exists(trg_fl_s):
+        TgUIC.uic.send(f'Removed: {trg_fl_s}')
+        os.remove(trg_fl_s)
+    with codecs.open(trg_fl_s, encoding='utf-8', mode='x') as file:
+        file.writelines(res_li)
+    TgUIC.uic.send(f'Created: {trg_fl_s}')
+
+
+@generic_hdl.tg_handler()
 def cmd_txt_seq_02(upd: Update, txt_seq_id: int):
     """Set current txt_seq by id"""
     if not txt_seq_id:
         tg_reply.cmd_p_req(upd, ELE_TY_txt_seq_id.id)
         return
-    txt_seq: TxtSeq = db.sel_txt_seq(txt_seq_id).result
+    txt_seq: TxtSeq = db.sel_txt_seq(int(txt_seq_id)).result
     if not txt_seq:
         tg_reply.cmd_err_key_not_found(upd, ENT_TY_txt_seq.descr, str(txt_seq_id))
         return
@@ -762,12 +1074,12 @@ def cmd_telex(upd: Update):
         TgColumn('c3', -1, 'Beispiel', 20)
     ]
     hint_dct = {
-        1: {'c1': 'konstant             ', 'c2': 'nichts (oder z)', 'c3': 'ngang   -> ngang'},
-        2: {'c1': 'fallend              ', 'c2': 'f              ', 'c3': 'huyeenf -> huyen'},
-        3: {'c1': 'steigend             ', 'c2': 's              ', 'c3': 'sawcs   -> sac'},
-        4: {'c1': 'unterbrochen steigend', 'c2': 'r              ', 'c3': 'hoir    -> hoi'},
-        5: {'c1': 'hoch steigend        ', 'c2': 'x              ', 'c3': 'ngax    -> nga'},
-        6: {'c1': 'tief fallend         ', 'c2': 'j              ', 'c3': 'nawngj  -> nang'}
+        1: {'c1': 'konstant             ', 'c2': 'nichts (oder z)', 'c3': 'ngang   -> Ngang'},
+        2: {'c1': 'fallend              ', 'c2': 'f              ', 'c3': 'huyeenf -> Huyền'},
+        3: {'c1': 'steigend             ', 'c2': 's              ', 'c3': 'sawcs   -> Sắc'},
+        4: {'c1': 'unterbrochen steigend', 'c2': 'r              ', 'c3': 'hoir    -> Hỏi'},
+        5: {'c1': 'hoch steigend        ', 'c2': 'x              ', 'c3': 'ngax    -> Ngã'},
+        6: {'c1': 'tief fallend         ', 'c2': 'j              ', 'c3': 'nawngj  -> Nặng'}
     }
     tbl_def = TableDef(col_li=col_li)
     tbl = dc_dic_2_tbl(hint_dct, tbl_def)
@@ -871,3 +1183,326 @@ def cmd_tst_run_tfnsh(upd: Update):
     """Finish current test"""
     tst_run: TstRun = services.tst_run_by_setng()
     services.tst_run_tfnsh(upd, tst_run)
+
+
+@generic_hdl.tg_handler()
+def cmd_utc(text: str):
+    """Under the sea analysis"""
+    tokenize: list = sent_tokenize(text)
+    str_li: list[str] = []
+    word_tokens_set: set[str] = set()
+    for token in tokenize:
+        word_tokens = ''
+        word_tokens_short = ''
+        for word in word_tokenize(token):
+            word = str(word).strip()
+            if str(word).find(' ') > 0:
+                word = f'[{word}]'
+            if word_tokens:
+                word_tokens = word_tokens + ' '
+            word_tokens = word_tokens + word
+            word_tokens_short = word_tokens.replace('[', '').replace(']', '')
+            word_tokens_set.add(word.replace('[', '').replace(']', '').lower())
+        str_li.append(services.google_link(word_tokens_short))
+    TgUIC.uic.send('\n'.join(str_li))
+    word_tokens_set = word_tokens_set.difference({',', ';', '*', '.', ':', '?', '!', '(', ')'})
+    TgUIC.uic.send('\n'.join([item for item in word_tokens_set]))
+    TgUIC.uic.send('\n'.join([services.google_link(item) for item in word_tokens_set]))
+
+
+@generic_hdl.tg_handler()
+def cmd_utc_vocry(text: str):
+    """Under the sea analysis"""
+    vocry, vocry_it = utc_vocry(text)
+    TgUIC.uic.send(f'vocry bkey: {vocry.bkey}')
+    TgUIC.uic.send(f'vocry_it.p_txt_seq_id: {vocry_it.p_txt_seq.id_}')
+
+
+@generic_hdl.tg_handler()
+def cmd_story_vocry():
+    """Generate Vocry from Story """
+    if not (cur__story := story_by_setng()):
+        TgUIC.uic.err_setng_miss(ELE_TY_story_id)
+        return
+
+    # noinspection PyTypeChecker
+    write_to_setng(Vocry(None, None, None, None, None))
+    vocry = story_vocry(cur__story)
+    TgUIC.uic.send(f'vocry bkey: {vocry.bkey} (vocry_id: {vocry.id}), len(vocry.it_li): {len(vocry.it_li)}')
+
+
+# noinspection PyUnusedLocal
+@generic_hdl.tg_handler()
+def cmd_soup(text: str):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/39.0.2171.95 Safari/537.36'}
+
+    page = requests.get(
+        url="https://en.bab.la/dictionary/vietnamese-english/h%E1%BB%AFu-%C3%ADch",
+        headers=headers)
+
+    file_content = page.content
+    # py_file = 'C:/Users/gun/Downloads/User Access Token V4.html'
+    # with codecs.open(py_file, encoding='utf-8') as file:
+    #     file_content = file.read()
+
+    # noinspection PyPackageRequirements
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(file_content, 'html.parser')
+    find_all: Tag = soup.find_all(class_='docs-content')[0]
+    print(find_all.get_text())
+    pass
+
+
+@generic_hdl.tg_handler()
+def cmd_vocry_tst():
+    vocry_tst()
+
+
+@generic_hdl.tg_handler()
+def cmd_vocry_02():
+    cu_tup = G3Ctx.cu_tup()
+    vocry: Vocry = ent_by_setng(cu_tup, ELE_TY_vocry_id, sel_vocry, ENT_TY_vocry).result
+    if not vocry:
+        # noinspection PyTypeChecker
+        vocry = Vocry(None, None, None, None, None)
+    ele_val = str(vocry.id) if vocry.id else None
+    cu_setng_d: dict[str] = chat_user_setting(cu_tup[0], cu_tup[1], ELE_TY_vocry_id, ele_val)
+    TgUIC.uic.send_settings(cu_setng_d)
+    # noinspection PyTypeChecker
+    write_to_setng(Vocry(None, None, None, None, None))
+    vocry = ent_by_setng(cu_tup, ELE_TY_vocry_id, sel_vocry, ENT_TY_vocry).result
+    TgUIC.uic.send(f'New value: {vocry}')
+
+
+@generic_hdl.tg_handler()
+def cmd_story_01(bkey):
+    txt_seq: TxtSeq
+    if not (txt_seq := ent_by_setng(G3Ctx.cu_tup(), ELE_TY_txt_seq_id, sel_txt_seq, ENT_TY_txt_seq).result):
+        TgUIC.uic.err_setng_miss(ELE_TY_txt_seq_id)
+        return
+
+    if not bkey:
+        TgUIC.uic.err_p_miss(ELE_TY_bkey)
+        return
+
+    story: Story = story_01(bkey, txt_seq)
+    story_03(story)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_02(story_id: str):
+    """Set current story by id"""
+    if not story_id:
+        # noinspection PyTypeChecker
+        write_to_c_setng(StoryIt(None, None, None, None))
+        # noinspection PyTypeChecker
+        write_to_c_setng(Story(None, None, None, None, None))
+        return
+    story: Story = story_02(int(story_id))
+    story_03(story)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_03(cmd_opts: str):
+    if not (story := story_by_setng()):
+        TgUIC.uic.err_setng_miss(ELE_TY_story_id)
+        return
+    f_all_it = cmd_opts and cmd_opts == 'compact'
+    story_03(story, f_all_it)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_25(req__bkey: str, for_uname: str):
+    if not for_uname:
+        for_uname = 'r'
+    user_id = for_user(for_uname, G3Ctx.user_id())
+    if not (story := story_25(user_id, req__bkey)):
+        return
+    story = story_02(story.id)
+    story_03(story)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_it_01():
+    txt_seq: TxtSeq
+    if not (txt_seq := ent_by_setng(G3Ctx.cu_tup(), ELE_TY_txt_seq_id, sel_txt_seq, ENT_TY_txt_seq).result):
+        TgUIC.uic.err_setng_miss(ELE_TY_txt_seq_id)
+        return
+
+    story: Story
+    if not (story := story_by_setng()):
+        TgUIC.uic.err_setng_miss(ELE_TY_story_id)
+        return
+
+    story_it_01(story, txt_seq)
+    story: Story = story_by_setng()
+    story_03(story)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_it_02(rowno_or_id: str):
+    if not rowno_or_id:
+        TgUIC.uic.error(f'Req Arg: rowno or id of the item.')
+        return
+
+    story: Story = story_by_setng()
+    if not (story_it := story.it_by_xxx(int(rowno_or_id))):
+        TgUIC.uic.error(f'No item found with #rowno_or_id == {rowno_or_id}')
+        return
+    write_to_c_setng(story_it)
+    story_03(story, False)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_it_02_header(cur__lc_pair: LcPair, header_s: str):
+    story: Story = story_by_setng()
+    if not story or not (
+            story_it := story_it_by_setng()):
+        TgUIC.uic.err_setng_miss(ELE_TY_story_it_id)
+        return
+    story_it: StoryIt = story.it_by_id(story_it.id)
+    story_it_02_header(story_it, header_s, cur__lc_pair)
+    story_03(story, False)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_it_prv():
+    """◀ """
+    TgUIC.f_send = True
+    # noinspection PyUnusedLocal
+    story_it = story_it_2n(-1)
+    # menu, mi_list = build_menu(story_it)
+    # generic_hdl.send_menu_keyboard(menu, mi_list)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_it_nxt():
+    """▶ """
+    TgUIC.f_send = True
+    # noinspection PyUnusedLocal
+    story_it = story_it_2n(1)
+    # menu, mi_list = build_menu(story_it)
+    # generic_hdl.send_menu_keyboard(menu, mi_list)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_it_aud(cmd_opts: str):
+    """📢 """
+    story: Story = story_by_setng()
+    if not story or not (
+            story_it := story_it_by_setng()):
+        TgUIC.uic.err_setng_miss(ELE_TY_story_it_id)
+        return
+    cur__story_it: StoryIt = story.it_by_id(story_it.id)
+
+    TgUIC.f_send = True
+    story_it_aud(cur__story_it, cmd_opts == 'all')
+
+
+@generic_hdl.tg_handler()
+def cmd_story_it_voc():
+    """📜 """
+    TgUIC.f_send = True
+    story: Story = story_by_setng()
+    if not story or not (
+            story_it := story_it_by_setng()):
+        TgUIC.uic.err_setng_miss(ELE_TY_story_it_id)
+        return
+    cur__story_it: StoryIt = story.it_by_id(story_it.id)
+    text = story_it_voc(cur__story_it)
+    text = tg_hdl_txt_menu.default(text, 'txt_menu_story')
+    txt_menu(text)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_from_lesson(base_key: str):
+    story: Story = story_from_lesson(base_key)
+    story_03(story)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_from_txt_fl(cur__area: str, cur__lc: Lc, req__fl_name: str):
+    """
+        Creates sequences according sequence marker. One sequence = one item
+    """
+    fl_s = os.path.join(env_g3b1_dir, cur__area, req__fl_name)
+    res_li = read_txt_story(fl_s, cur__lc)
+    story: Story = story_from_txt_li(res_li, f'{req__fl_name}-{now_for_sql()}', False)
+    story_03(story)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_from_txt_li(cur__area: str, req__fl_name: str):
+    """
+        Creates sequences of the content of the file by splitting at the operator |
+        The texts will be translated by the bot.
+        The results are stored as a Story
+    """
+    fl_s = os.path.join(env_g3b1_dir, cur__area, req__fl_name)
+    with codecs.open(fl_s, encoding='utf-8') as f:
+        res_li: list[str] = f.readlines()
+    story: Story = story_from_txt_li(res_li, f'{req__fl_name}-{now_for_sql()}', False)
+    story_03(story)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_from_utc_txt_li(cur__area: str, req__fl_name: str):
+    """
+        Creates sequences of the content of the file by splitting at the operator |
+        The texts will be translated by the bot.
+        The results are stored as a Story
+    """
+    fl_s = os.path.join(env_g3b1_dir, cur__area, req__fl_name)
+    with codecs.open(fl_s, encoding='utf-8') as f:
+        res_li: list[str] = f.readlines()
+    story: Story = story_from_txt_li(res_li, f'{req__fl_name}-{now_for_sql()}')
+    story_03(story)
+
+
+@generic_hdl.tg_handler()
+def cmd_story_menu(bkey: str, for_uname: str):
+    if not bkey and not for_uname:
+        cur__story: Story = story_by_setng()
+        if not cur__story:
+            TgUIC.uic.err_setng_miss(ELE_TY_story_id)
+            return
+        bkey = cur__story.bkey
+        for_user_id = cur__story.user_id
+    else:
+        if not bkey:
+            TgUIC.uic.err_p_miss(ELE_TY_bkey)
+            return
+        if not for_uname:
+            for_uname = 'r'
+        for_user_id = for_user(for_uname, G3Ctx.user_id())
+
+    # bot_msg: Message = \
+    story_menu(for_user_id, bkey)
+    # G3Ctx.ctx.bot.pin_chat_message(G3Ctx.chat_id(), bot_msg.message_id)
+
+
+@generic_hdl.tg_handler()
+def cmd_lesson_upl(text: str):
+    if not text:
+        TgUIC.uic.err_p_miss(ELE_TY_txt)
+        return
+
+    line_li: list[str] = text.split('\n')
+    lyrics_s_li: list[str] = []
+    for line in line_li:
+        logger.debug(line)
+        line = line.strip().split(':', 2)[2]
+        if line.strip() == '***':
+            continue
+        line_seg_li: list[str] = line.split(':', 1)
+        if len(line_seg_li) == 1:
+            lyrics_s = line_seg_li[0]
+        else:
+            lyrics_s = line_seg_li[1]
+        lyrics_s_li.append(lyrics_s)
+    lyrics_s = ' '.join(lyrics_s_li)
+    vocry, vocry_it = utc_vocry(lyrics_s)
+    TgUIC.uic.send(f'vocry bkey: {vocry.bkey}')
+    TgUIC.uic.send(f'vocry_it.p_txt_seq_id: {vocry_it.p_txt_seq.id_}')

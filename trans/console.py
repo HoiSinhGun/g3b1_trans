@@ -6,7 +6,7 @@ from telegram.ext import Dispatcher, CallbackContext
 
 import test_utils
 import tg_db
-import tg_hdl
+import trans__tg_hdl
 import trans_main
 from config.model import TransConfig
 from g3b1_log.log import cfg_logger
@@ -19,7 +19,7 @@ logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
 def c(msg: str):
     # print(str(f'\n\n>>>{msg}\n'))
-    dispatcher: Dispatcher = test_utils.setup(tg_hdl.__file__)
+    dispatcher: Dispatcher = test_utils.setup(trans__tg_hdl.__file__)
     user: User = User(tg_user_id, 'Gunnar', False)
     chat: Chat = Chat(tg_chat_id, constants.CHAT_GROUP)
 
@@ -52,7 +52,7 @@ def translate_manual(text: str, lc: str, lc2: str) -> (str, str, int):
 def main():
     TransConfig.translate_func = translate_manual
     a = 'go'
-    while a != 'exit':
+    while a != 'q':
         # taking input from the user
         a = input()
         try:

@@ -1,27 +1,44 @@
+import logging
+import os.path
 from builtins import enumerate
+from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from random import shuffle
+from typing import Any, Optional, Union
 
 from sqlalchemy.engine import Row
+from underthesea import sent_tokenize
 
+from constants import env_g3b1_dir
+from decorator import auto_str
 from elements import EleVal, ELE_TY_bkey, ELE_TY_tst_type, ELE_TY_user_id, ELE_TY_lc, ELE_TY_lc2
-from g3b1_serv.str_utils import italic, bold
+from g3b1_serv.str_utils import italic, bold, uncapitalize
+from log import cfg_logger
+from py_meta import by_row_initializer
 from trans.data import EntTy, ENT_TY_tst_tplate, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate_it, \
     ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp, ENT_TY_txtlc_onym, ENT_TY_txtlc, ENT_TY_tst_run, \
     ENT_TY_tst_run_act_sus, ENT_TY_tst_run_act, ELE_TY_txtlc_id, ELE_TY_txtlc_mp_id, ELE_TY_txt_seq_it_id, \
     ELE_TY_tst_run_act_id, ELE_TY_tst_tplate_id, ELE_TY_tst_run_id, ELE_TY_txt_seq_id, ELE_TY_tst_run_act_sus_id, \
-    ELE_TY_tst_tplate_it_ans_id, ELE_TY_tst_tplate_it_id
+    ELE_TY_tst_tplate_it_ans_id, ELE_TY_tst_tplate_it_id, ENT_TY_txtlc_file, ELE_TY_txtlc_file_id, ELE_TY_txt_menu, \
+    ELE_TY_txt_seq_it_num, ENT_TY_story_it, ENT_TY_story, ELE_TY_story_it_id, ELE_TY_story_id, ENT_TY_learned, \
+    ELE_TY_learned_id, ENT_TY_vocry_it, ENT_TY_vocry, ENT_TY_vocry_mp_it, ELE_TY_vocry_id, ELE_TY_vocry_it_id, \
+    ELE_TY_vocry_mp_it_id, ENT_TY_txt_seq_aud, ELE_TY_txt_seq_aud_id, ELE_TY_story_show_text
 from trans.data.enums import Lc, ActTy, Sus
 
 ENT_TY_trans_li = [ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, ENT_TY_tst_tplate_it_ans,
                    ENT_TY_tst_run, ENT_TY_tst_run_act, ENT_TY_tst_run_act_sus,
                    ENT_TY_txt_seq, ENT_TY_txt_seq_it,
-                   ENT_TY_txtlc, ENT_TY_txtlc_mp, ENT_TY_txtlc_onym]
+                   ENT_TY_txtlc, ENT_TY_txtlc_mp, ENT_TY_txtlc_onym, ENT_TY_txtlc_file,
+                   ENT_TY_story, ENT_TY_story_it,
+                   ENT_TY_vocry, ENT_TY_vocry_it, ENT_TY_vocry_mp_it]
 
-ELE_TY_trans_li = [ELE_TY_txtlc_id, ELE_TY_txtlc_mp_id,
-                   ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id,
+ELE_TY_trans_li = [ELE_TY_txt_menu,
+                   ELE_TY_txtlc_id, ELE_TY_txtlc_mp_id, ELE_TY_txtlc_file_id,
+                   ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txt_seq_it_num,
                    ELE_TY_tst_run_id, ELE_TY_tst_run_act_id, ELE_TY_tst_run_act_sus_id,
-                   ELE_TY_tst_tplate_id, ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_it_ans_id]
+                   ELE_TY_tst_tplate_id, ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_it_ans_id,
+                   ELE_TY_story_id, ELE_TY_story_it_id, ELE_TY_story_show_text,
+                   ELE_TY_vocry_id, ELE_TY_vocry_it_id, ELE_TY_vocry_mp_it_id]
 
 ENT_TY_tst_run.cmd_prefix = '.tst.run.'
 ENT_TY_tst_run.but_cmd_def = 'qansw'
@@ -30,6 +47,9 @@ ENT_TY_tst_run.but_cmd_li = [
     [('❗', 'tinfo'), ('❓', 'thint'), ('🔐', 'tfnsh')]
 ]
 ENT_TY_tst_run.keyboard_descr = 'Type the answer or choose an option!'
+MenuKeyboard = namedtuple('MenuKeyboard', ['menu', 'reply_markup'])
+
+logger = cfg_logger(logging.getLogger(__name__), logging.DEBUG)
 
 
 class TransSqlDictFactory(dict):
@@ -71,6 +91,28 @@ class Txtlc:
         return self.txt
 
 
+class TxtlcFile:
+    var_name = 'txtlc_file'
+    ent_ty = ENT_TY_txtlc_file
+    ele_ty = ELE_TY_txtlc_file_id
+
+    @by_row_initializer
+    def __init__(self, txtlc_id: Union[Txtlc, int], file_id: int, user_id: int,
+                 ins_tst: str = None, id_: int = 0) -> None:
+        super().__init__()
+        self.txtlc: Txtlc = txtlc_id
+        self.file_id = file_id
+        self.user_id = user_id
+        self.ins_tst = ins_tst
+        self.id = id_
+        delattr(self, 'id_')
+        delattr(self, 'txtlc_id')
+
+    def get_path(self) -> str:
+        fl_s = os.path.join(env_g3b1_dir, 'g3b1_trans', 'txtlc_file', f'{self.id}.mp3')
+        return fl_s
+
+
 @dataclass
 class TxtlcOnym:
     txtlc_src: Txtlc
@@ -110,6 +152,15 @@ class TxtlcMp:
     @staticmethod
     def lc_pair(txtlc_mp: "TxtlcMp") -> (Lc, Lc):
         return txtlc_mp.txtlc_src.lc, txtlc_mp.txtlc_trg.lc
+
+    def __eq__(self, o: object) -> bool:
+        return self.__hash__() == o.__hash__()
+
+    def __ne__(self, o: object) -> bool:
+        return not self.__eq__(o)
+
+    def __hash__(self) -> int:
+        return hash(self.id_)
 
 
 @dataclass
@@ -583,6 +634,10 @@ class TxtSeq:
     @classmethod
     def smart_format(cls, src_str: str, f_sc=True) -> str:
         txt = src_str
+        if src_str.startswith('|||'):
+            # split sentences with nlp which currently already automatically done in the code block after...
+            token_li: list[str] = sent_tokenize(txt[3:])
+            txt = '||' + '|'.join(token_li)
         if src_str.startswith('||'):
             # Example input: "||Hello world, how |  are| you today ! Is |everything|  OK?"
             # output: "||Hello world|,|how|are|you today|!|Is|everything|OK|?|
@@ -591,6 +646,7 @@ class TxtSeq:
             if f_sc:
                 for sc in cls.sc_li():
                     txt = txt.replace(f'{sc} ', sc).replace(f' {sc}', sc).replace(sc, f'|{sc}|')
+            txt = '||' + txt[2:].replace('||', '|')
         txt = txt.strip('|')
         return txt
 
@@ -620,3 +676,251 @@ class TxtSeq:
         for item in self.it_li:
             if item.txtlc_mp.txtlc_src.txt == ans_str:
                 return item
+
+
+@auto_str
+class Vocry:
+    var_name = 'vocry'
+    ent_ty = ENT_TY_vocry
+    ele_ty = ELE_TY_vocry_id
+
+    @by_row_initializer
+    def __init__(self, chat_id, bkey: str, lc: Union[Lc, str], lc2: Union[Lc, str], id_: int = 0) -> None:
+        super().__init__()
+        self.chat_id = chat_id
+        self.bkey = bkey
+        self.lc: Lc = Lc.fin(str(lc))
+        self.lc2: Lc = Lc.fin(str(lc2))
+        self.id = id_
+        self.it_li: list["VocryIt"] = []
+        self.mp_it_li: list["VocryMpIt"] = []
+        delattr(self, 'id_')
+
+    def txtlc_d(self) -> dict:
+        res_d: dict = {}
+        for it in [i for i in self.it_li if i.p_txt_seq]:
+            it_li = it.p_txt_seq.it_li
+            for idx, txt_seq_it in enumerate(it_li):
+                txtlc: Txtlc = txt_seq_it.txtlc_mp.txtlc_src
+                if txtlc.id_ in res_d.keys():
+                    continue
+                text_li: list[str] = []
+                if idx > 0:
+                    text_li.append(it_li[idx - 1].txtlc_mp.txtlc_src.txt)
+                text_li.append(txtlc.txt)
+                if idx + 1 < len(it_li):
+                    text_li.append(it_li[idx + 1].txtlc_mp.txtlc_src.txt)
+                res_d[txtlc.id_] = {'txtlc': txtlc, 'text': ' '.join(text_li)}
+        return res_d
+
+    def build_mp_li(self) -> list["VocryMpIt"]:
+        txt_seq_it_li: list[TxtSeqIt] = []
+        for vocry_it in self.it_li:
+            txt_seq_it_li.extend(vocry_it.p_txt_seq.it_li)
+        txtlc_mp_set = set([txt_seq_it.txtlc_mp for txt_seq_it in txt_seq_it_li])
+        it_li: list[VocryMpIt] = [VocryMpIt(self, txtlc_mp) for txtlc_mp in txtlc_mp_set]
+        shuffle(it_li)
+        self.mp_it_li = it_li
+        return self.mp_it_li
+
+    def __eq__(self, o: object) -> bool:
+        return self.__hash__() == o.__hash__()
+
+    def __ne__(self, o: object) -> bool:
+        return not self.__eq__(o)
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+
+@auto_str
+class VocryIt:
+    var_name = 'vocry_it'
+    ent_ty = ENT_TY_vocry_it
+    ele_ty = ELE_TY_vocry_it_id
+
+    @by_row_initializer
+    def __init__(self, vocry_id: Union[Vocry, int], p_txt_seq_id: Union[TxtSeq, int], rowno: int, id_: int = 0) -> None:
+        super().__init__()
+        self.vocry = vocry_id
+        self.p_txt_seq: TxtSeq = p_txt_seq_id
+        if not rowno:
+            self.rowno = len(self.vocry.it_li) + 1
+        else:
+            self.rowno = rowno
+        self.id = id_
+        delattr(self, 'id_')
+        delattr(self, 'vocry_id')
+        delattr(self, 'p_txt_seq_id')
+
+
+@auto_str
+class VocryMpIt:
+    var_name = 'vocry_mp_it'
+    ent_ty = ENT_TY_vocry_mp_it
+    ele_ty = ELE_TY_vocry_mp_it_id
+
+    @by_row_initializer
+    def __init__(self, vocry_id: Union[Vocry, int], txtlc_mp_id: Union[TxtlcMp, int], id_: int = 0) -> None:
+        super().__init__()
+        self.vocry = vocry_id
+        self.txtlc_mp: TxtlcMp = txtlc_mp_id
+        self.id = id_
+        delattr(self, 'id_')
+        delattr(self, 'vocry_id')
+        delattr(self, 'txtlc_mp_id')
+
+
+@auto_str
+class Learned:
+    var_name = 'learned'
+    ent_ty = ENT_TY_learned
+    ele_ty = ELE_TY_learned_id
+
+    @by_row_initializer
+    def __init__(self, user_id: int, txtlc_id: Union[Txtlc, int], f_learned=False, ins_tst: str = None,
+                 id_: int = 0) -> None:
+        super().__init__()
+        self.user_id = user_id
+        self.txtlc = txtlc_id
+        self.ins_tst = ins_tst
+        self.f_learned = f_learned
+        self.id = id_
+        delattr(self, 'id_')
+        delattr(self, 'txtlc_id')
+        delattr(self, 'f_learned')
+
+
+class Story:
+    var_name = 'story'
+    ent_ty = ENT_TY_story
+    ele_ty = ELE_TY_story_id
+
+    @by_row_initializer
+    def __init__(self, chat_id: int, user_id: int, bkey: str, lc: Lc, id_: int = 0) -> None:
+        super().__init__()
+        # noinspection PyTypeChecker
+        self.id: int = id_
+        self.chat_id = chat_id
+        self.user_id = user_id
+        self.bkey = bkey
+        self.lc = lc
+        self.it_li: list[StoryIt] = []
+        delattr(self, 'id_')
+
+    def __len__(self) -> int:
+        return len(self.it_li)
+
+    def is_lesson(self) -> bool:
+        fl_base_cfg_s: str = os.path.join(self.base_dir(), 'base.cfg')
+        path_exists = os.path.exists(fl_base_cfg_s)
+        return path_exists
+
+    def base_aud_seg_fl(self, seg: int) -> Optional[str]:
+        if not self.is_lesson():
+            return
+        seg_s = str(seg).rjust(3, '0')
+        base_aud_seg_fl = os.path.join(self.base_dir(), 'split', f'{seg_s}.mp3')
+        if not os.path.exists(base_aud_seg_fl):
+            logger.error(f'404: {base_aud_seg_fl}')
+        return base_aud_seg_fl
+
+    def base_dir(self) -> Optional[str]:
+        return os.path.join(env_g3b1_dir, 'vn', self.bkey)
+
+    def append(self, story_it: "StoryIt") -> "StoryIt":
+        self.it_li.append(story_it)
+        return story_it
+
+    def it_by_xxx(self, val: int) -> "StoryIt":
+        if story_it := self.it_by_rowno(val):
+            return story_it
+        else:
+            return self.it_by_id(val)
+
+    def it_by_rowno(self, rowno: int) -> "StoryIt":
+        for it in self.it_li:
+            if it.rowno == rowno:
+                return it
+
+    def it_by_id(self, id_: int) -> "StoryIt":
+        for it in self.it_li:
+            if it.id == id_:
+                return it
+
+    def __str__(self):
+        return '%s (%s: %s)' % (
+            self.bkey,
+            uncapitalize(type(self).__name__) + '_id',
+            self.id)
+
+
+@auto_str
+class StoryIt:
+    var_name = 'story_it'
+    ent_ty = ENT_TY_story_it
+    ele_ty = ELE_TY_story_it_id
+
+    @by_row_initializer
+    def __init__(self, story_id: Union[Story, int], txtlc_mp_id: [TxtlcMp, int], p_txt_seq_id: Union[TxtSeq, int],
+                 rowno=0, role='',
+                 id_: int = 0) -> None:
+        super().__init__()
+        self.story: Story = story_id
+        if txtlc_mp_id:
+            self.txtlc_mp: TxtlcMp = txtlc_mp_id
+        else:
+            # noinspection PyTypeChecker
+            self.txtlc_mp: TxtlcMp = None
+        self.rowno = rowno
+        if not rowno:
+            if not story_id:
+                self.rowno = 0
+            elif isinstance(story_id, int):
+                self.rowno = 0
+            else:
+                self.rowno = len(self.story) + 1
+        self.p_txt_seq: TxtSeq = p_txt_seq_id
+        self.id = id_
+        self.role = role
+        delattr(self, 'id_')
+        delattr(self, 'story_id')
+        delattr(self, 'txtlc_mp_id')
+        delattr(self, 'p_txt_seq_id')
+
+    def base_seg_fl(self) -> Optional[str]:
+        return self.story.base_aud_seg_fl(self.rowno)
+
+    def vers_seg_fl_li(self) -> list[str]:
+        # files expected in {g3b1_dir}/vn/{story.bkey}/proj/***/vers/***/seg_subst
+        res_li = []
+        base_seg_fl = os.path.split(self.base_seg_fl())[1]
+        for root, dirs, files in os.walk(os.path.join(self.story.base_dir(), 'proj')):
+            if base_seg_fl in files:
+                res_li.append(os.path.join(root, base_seg_fl))
+        return res_li
+
+    def str_compact(self, width=33) -> str:
+        res_s = f'{self.p_txt_seq.txt[0:width - 3].ljust(width, ".")}'
+        if self.txtlc_mp:
+            res_s = f'Hd: {self.txtlc_mp.txtlc_src.txt} - {res_s}'
+        res_s = f'(No:{self.rowno}) {res_s}'
+        return res_s
+
+
+@auto_str
+class TxtSeqAud:
+    var_name = 'txt_seq_aud'
+    ent_ty = ENT_TY_txt_seq_aud
+    ele_ty = ELE_TY_txt_seq_aud_id
+
+    @by_row_initializer
+    def __init__(self, user_id: int, p_txt_seq_id: Union[TxtSeq, int], ins_tst: str = None,
+                 id_: int = 0) -> None:
+        super().__init__()
+        self.user_id = user_id
+        self.p_txt_seq: TxtSeq = p_txt_seq_id
+        self.ins_tst = ins_tst
+        self.id = id_
+        delattr(self, 'id_')
+        delattr(self, 'p_txt_seq_id')

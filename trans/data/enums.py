@@ -1,3 +1,4 @@
+from collections import namedtuple
 from enum import Enum
 
 from elements import EleVal
@@ -7,7 +8,7 @@ class Lc(Enum):
     # Never change this order
     # When adding new entries, please make sure that EN stays at the bottom.
     # After all I am writing all comments in EN: isn't that honour enough?
-    TR = 'TR'  # There are people who can whistle in Turkish, I hope I can visit that village before
+    TR = 'TR'  # There are people who can whistle the Turkish language, I hope I can visit that village before
     # some billionaire discovers it and turns it into another Disney Land for whatever reason
     RU = 'RU'  # Did you know: an influential business man is called oligarch in Russia and philanthropist in US
     DE = 'DE'
@@ -19,6 +20,20 @@ class Lc(Enum):
     FR = 'FR'
     EN = 'EN'
 
+    def flag(self):
+        flag_d = {
+            'VI': '🇻🇳',
+            'RU': '🇷🇺',
+            'EN': '🇺🇸',
+            'TR': '🇹🇷',
+            'DE': '🇩🇪',
+            'IT': '🇮🇪',
+            'ES': '🇪🇸',
+            'FR': '🇫🇷',
+            'LA': '🇻🇦'
+        }
+        return flag_d[self.value]
+
     @staticmethod
     def to_str_pair(lc_pair: tuple["Lc", "Lc"]) -> tuple[str, str]:
         return lc_pair[0].value, lc_pair[1].value
@@ -27,21 +42,21 @@ class Lc(Enum):
     def from_str_pair(lc_pair: tuple[str, str]) -> tuple["Lc", "Lc"]:
         return Lc.fin(lc_pair[0]), Lc.fin(lc_pair[1])
 
-    @staticmethod
-    def fin(lc_str: str) -> "Lc":
-        if not lc_str:
-            # noinspection PyTypeChecker
-            return None
-        for k, lc in Lc.__members__.items():
-            if k == lc_str:
-                return lc
+    @classmethod
+    def fin(cls, val: str) -> "Lc":
         # noinspection PyTypeChecker
-        return None
+        return fin(cls, val)
 
     @classmethod
     def from_ele_val(cls, ele_val: EleVal) -> EleVal:
         ele_val.val_mp = cls.fin(ele_val.val)
         return ele_val
+
+    def __str__(self):
+        return self.value
+
+
+TyLcPair = namedtuple('TyLcPair', ['lc', 'lc2'])
 
 
 class LcPair:
@@ -62,6 +77,20 @@ class LcPair:
         ele_val.val_mp = lc_pair
         return ele_val
 
+    def to_tup(self) -> tuple[Lc, Lc]:
+        return self.lc, self.lc2
+
+
+class WrdRTy(Enum):
+    trans = 'trans'
+    syn = 'syn'
+    ant = 'ant'
+
+    @classmethod
+    def fin(cls, val: str) -> "WrdRTy":
+        # noinspection PyTypeChecker
+        return fin(cls, val)
+
 
 class ActTy(Enum):
     help = 'help'
@@ -74,29 +103,28 @@ class ActTy(Enum):
     thint = 'thint'
     tfnsh = 'tfnsh'
 
-    @staticmethod
-    def fin(val: str) -> "ActTy":
-        if not val:
-            # noinspection PyTypeChecker
-            return None
-        for k, v in ActTy.__members__.items():
-            if k == v:
-                return v
+    @classmethod
+    def fin(cls, val: str) -> "ActTy":
         # noinspection PyTypeChecker
-        return None
+        return fin(cls, val)
 
 
 class Sus(Enum):
     sccs = 'sccs'
     fail = 'fail'
 
-    @staticmethod
-    def fin(val: str) -> "Sus":
-        if not val:
-            # noinspection PyTypeChecker
-            return None
-        for k, v in Sus.__members__.items():
-            if val == k:
-                return v
+    @classmethod
+    def fin(cls, val: str) -> "Sus":
+        # noinspection PyTypeChecker
+        return fin(cls, val)
+
+
+def fin(ty, val: str) -> Enum:
+    if not val:
         # noinspection PyTypeChecker
         return None
+    for k, v in ty.__members__.items():
+        if k == val:
+            return v
+    # noinspection PyTypeChecker
+    return None

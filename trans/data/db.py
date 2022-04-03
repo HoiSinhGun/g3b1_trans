@@ -12,22 +12,27 @@ from sqlalchemy.sql import Select, ColumnCollection, Update
 import integrity as tg_integrity
 import trans.data
 import utilities
+from subscribe.data.model import G3File
 from elements import ELE_TY_chat_id
+from entities import EntId
 from g3b1_cfg.tg_cfg import G3Ctx
 from g3b1_data import settings
 from g3b1_data.model import G3Result
 from g3b1_log.log import cfg_logger
-from tg_db import fetch_id
+from tg_db import fetch_id, sel_ent_ty
 from trans.data import ELE_TY_tst_tplate_it_id, ELE_TY_tst_tplate_id, \
-    ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id, ELE_TY_tst_run_id, ELE_TY_tst_run_act_id
+    ELE_TY_txt_seq_id, ELE_TY_txt_seq_it_id, ELE_TY_txtlc_mp_id, ELE_TY_tst_run_id, ELE_TY_tst_run_act_id, \
+    ELE_TY_vocry_id, ELE_TY_story_id, ELE_TY_txtlc_id
 from trans.data import ENT_TY_txtlc, ENT_TY_txt_seq_it, ENT_TY_txt_seq, ENT_TY_tst_tplate, ENT_TY_tst_tplate_it, \
-    ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp
+    ENT_TY_tst_tplate_it_ans, ENT_TY_txtlc_mp, ENT_TY_vocry, ENT_TY_vocry_it, ENT_TY_story, ENT_TY_story_it
 from trans.data import md_TRANS, eng_TRANS
 from trans.data.integrity import pop_only_dc_fields, replace_lcs, from_row_any, orm, from_row_txtlc_mp, \
     from_row_txt_seq, from_row_txt_seq_it, from_row_tst_tplate, from_row_tst_tplate_it, from_row_tst_tplate_it_ans, \
-    from_row_tst_run, from_row_tst_run_act, from_row_tst_run_act_sus, from_row_txtlc
+    from_row_tst_run, from_row_tst_run_act, from_row_tst_run_act_sus, from_row_txtlc, \
+    from_row_vocry, from_row_vocry_it, \
+    from_row_story, from_row_story_it
 from trans.data.model import Txtlc, TxtlcMp, TxtlcOnym, TxtSeq, TxtSeqIt, TstTplate, TstTplateIt, \
-    TstTplateItAns, Lc, TstRun, TstRunAct, TstRunActSus
+    TstTplateItAns, Lc, TstRun, TstRunAct, TstRunActSus, Vocry, VocryIt, Story, StoryIt, TxtlcFile
 
 logger = cfg_logger(logging.getLogger(__name__), logging.WARN)
 
@@ -122,6 +127,15 @@ def fiby_txt_lc(txtlc: Txtlc, con: Connection = None) -> G3Result[Txtlc]:
         return wrapped(con, txtlc, logger)
     with eng_TRANS.connect() as con:
         return wrapped(con, txtlc, logger)
+
+
+def sel_txtlc(txtlc_id: int) -> G3Result[Txtlc]:
+    if not isinstance(txtlc_id, int):
+        # noinspection PyUnresolvedReferences
+        txtlc_id = txtlc_id.id
+
+    txtlc = fiby_txt_lc(Txtlc(id_=txtlc_id)).result
+    return G3Result(4, txtlc)
 
 
 def ins_onym(txt_onym: TxtlcOnym) -> G3Result:
@@ -241,6 +255,51 @@ def sel_txtlc_mp(txtlc_mp_id: int, con: Connection = None) -> G3Result[TxtlcMp]:
             return wrapped(con)
 
 
+def fin_txtlc_file(lc: Lc) -> G3Result[list[TxtlcFile]]:
+    con: Connection
+    with eng_TRANS.connect() as con:
+        tbl: Table = md_TRANS.tables['txtlc_file']
+        tbl_txtlc: Table = md_TRANS.tables['txtlc']
+        j = tbl.join(tbl_txtlc, tbl.c.txtlc_id == tbl_txtlc.c.id)
+        sql_stmnt: Select = select(tbl.columns).select_from(j).where(
+            tbl_txtlc.c.lc == lc.value
+        ).order_by(desc(tbl.c.user_id), desc(tbl.c.id))
+        rs: Result = con.execute(sql_stmnt)
+        res_li: list[TxtlcFile] = []
+        for rs_it in rs.fetchall():
+            txtlc_file = TxtlcFile(row=rs_it, repl_dct={ELE_TY_txtlc_id.col_name: sel_txtlc(rs_it['txtlc_id']).result})
+            res_li.append(
+                txtlc_file)
+        if not rs:
+            return G3Result(4)
+        return G3Result(0, res_li)
+
+
+def fin_txtlc_file_of(txtlc: Txtlc = None, g3_file: G3File = None) -> G3Result[list[TxtlcFile]]:
+    con: Connection
+    with eng_TRANS.connect() as con:
+        tbl: Table = md_TRANS.tables['txtlc_file']
+        cols = tbl.columns
+        sql_stmnt: Select = select(tbl)
+        if txtlc is None and g3_file is None:
+            raise KeyError('both parameters are None')
+        if txtlc is not None and g3_file is not None:
+            where_clause = ((cols.txtlc_id == txtlc.id_) & (cols.file_id == g3_file.id))
+        elif txtlc is not None:
+            where_clause = (cols.txtlc_id == txtlc.id_)
+        else:
+            where_clause = (cols.file_id == g3_file.id)
+        stmnt_where = sql_stmnt.where(where_clause)
+        sql_stmnt = stmnt_where.order_by(desc(cols.ins_tst))
+        rs: Result = con.execute(sql_stmnt)
+        res_li: list[TxtlcFile] = []
+        for rs_it in rs.fetchall():
+            res_li.append(TxtlcFile(row=rs_it, repl_dct={ELE_TY_txtlc_id.col_name: txtlc}))
+        if not rs:
+            return G3Result(4)
+        return G3Result(0, res_li)
+
+
 def fin_txtlc_mp(txtlc: Txtlc, lc2: Lc, translator=None) -> G3Result[TxtlcMp]:
     con: Connection
     with eng_TRANS.connect() as con:
@@ -316,6 +375,10 @@ def txtlc_txt_cp(txt: str, lc: Lc, limit: int = 10) -> list[Txtlc]:
 
 
 def sel_txt_seq(txt_seq_id: int, con: Connection = None) -> G3Result[TxtSeq]:
+    if not isinstance(txt_seq_id, int):
+        # noinspection PyUnresolvedReferences
+        txt_seq_id = txt_seq_id.id
+
     def wrapped(_con: Connection) -> G3Result[TxtSeq]:
         txt_seq: TxtSeq
         tbl: Table = md_TRANS.tables[ENT_TY_txt_seq.tbl_name]
@@ -775,3 +838,199 @@ def sel_tst_run(id_: int) -> G3Result[TstRun]:
                     from_row_tst_run_act_sus(row_it_it, repl_dct)
                 ent_it.it_li.append(ent_it_it)
         return G3Result(0, ent)
+
+
+def ins_vocry(vocry: Vocry) -> G3Result[Vocry]:
+    con: Connection
+    with eng_TRANS.begin() as con:
+        tbl: Table = md_TRANS.tables[ENT_TY_vocry.tbl_name]
+        tbl_i: Table = md_TRANS.tables[ENT_TY_vocry_it.tbl_name]
+
+        values = dict(
+            chat_id=vocry.chat_id,
+            bkey=vocry.bkey,
+            lc=vocry.lc.value,
+            lc2=vocry.lc2.value
+        )
+        insert_stmnt: insert = insert(tbl).values(
+            values
+        )
+        rs = con.execute(insert_stmnt)
+
+        if not (vocry_id := fetch_id(con, rs, tbl.name)):
+            return G3Result(4)
+        vocry.id = vocry_id
+
+        for it in vocry.it_li:
+            values = dict(
+                vocry_id=vocry.id,
+                p_txt_seq_id=it.p_txt_seq.id_,
+                rowno=it.rowno
+            )
+            insert_stmnt: insert = insert(tbl_i).values(
+                values
+            )
+            # noinspection PyUnusedLocal
+            rs = con.execute(insert_stmnt)
+        return G3Result(0, vocry)
+
+
+def sel_vocry(vocry_id: int, con: Connection = None) -> G3Result[Vocry]:
+    if not isinstance(vocry_id, int):
+        # noinspection PyUnresolvedReferences
+        vocry_id = vocry_id.id
+
+    def wrapped(_con: Connection) -> G3Result[Vocry]:
+        vocry: Vocry
+        tbl: Table = md_TRANS.tables[ENT_TY_vocry.tbl_name]
+        tbl_it: Table = md_TRANS.tables[ENT_TY_vocry_it.tbl_name]
+        stmnt = select(tbl).where(tbl.columns['id'] == vocry_id)
+        rs = _con.execute(stmnt)
+        row = rs.first()
+        if not row:
+            return G3Result(4)
+        vocry: Vocry = from_row_vocry(row)
+        # now the items
+        stmt = select(tbl_it).where(tbl_it.columns[ELE_TY_vocry_id.col_name] == vocry_id). \
+            order_by(asc(tbl_it.columns['rowno']))
+        rs = _con.execute(stmt)
+        rows = rs.fetchall()
+        for it_row in rows:
+            repl_dct: dict[str, Any] = {ELE_TY_vocry_id.col_name: vocry,
+                                        ELE_TY_txt_seq_id.col_name: sel_txt_seq(
+                                            it_row[ELE_TY_txt_seq_id.col_name]).result}
+            repl_dct = orm(_con, tbl_it, it_row, repl_dct)
+            vocry_it: VocryIt = from_row_vocry_it(it_row, repl_dct)
+            vocry.it_li.append(vocry_it)
+        return G3Result(0, vocry)
+
+    if con:
+        return wrapped(con)
+    else:
+        with eng_TRANS.begin() as con:
+            return wrapped(con)
+
+
+def fin_vocry(chat_id: int, bkey: str) -> Vocry:
+    tbl: Table = md_TRANS.tables[ENT_TY_vocry.tbl_name]
+    stmnt = select(tbl).where(tbl.c.chat_id == chat_id, tbl.c.bkey == bkey)
+    cr: CursorResult = eng_TRANS.execute(stmnt)
+    return from_row_vocry(cr.fetchone())
+
+
+def del_vocry(id_: int) -> G3Result:
+    con: Connection
+    with eng_TRANS.connect() as con:
+        tbl: Table = md_TRANS.tables['vocry']
+        stmnt: delete = delete(tbl).where(tbl.columns.id == id_)
+        con.execute(stmnt)
+    return G3Result(0)
+
+
+def ins_story(story: Story) -> G3Result[Story]:
+    con: Connection
+    with eng_TRANS.begin() as con:
+        tbl: Table = md_TRANS.tables[ENT_TY_story.tbl_name]
+        tbl_i: Table = md_TRANS.tables[ENT_TY_story_it.tbl_name]
+
+        values = dict(
+            chat_id=story.chat_id,
+            user_id=story.user_id,
+            bkey=story.bkey,
+            lc=story.lc.value
+        )
+        insert_stmnt: insert = insert(tbl).values(
+            values
+        )
+        rs = con.execute(insert_stmnt)
+
+        if not (story_id := fetch_id(con, rs, tbl.name)):
+            return G3Result(4)
+        story.id = story_id
+
+        for it in story.it_li:
+            txtlc_mp_id = it.txtlc_mp.id_ if it.txtlc_mp else None
+            values = dict(
+                story_id=story.id,
+                txtlc_mp_id=txtlc_mp_id,
+                p_txt_seq_id=it.p_txt_seq.id_,
+                rowno=it.rowno,
+                role=it.role
+            )
+            insert_stmnt: insert = insert(tbl_i).values(
+                values
+            )
+            # noinspection PyUnusedLocal
+            rs = con.execute(insert_stmnt)
+        return G3Result(0, story)
+
+
+def sel_story(story_id: int, con: Connection = None) -> G3Result[Story]:
+    if not isinstance(story_id, int):
+        # noinspection PyUnresolvedReferences
+        story_id = story_id.id
+
+    def wrapped(_con: Connection) -> G3Result[Story]:
+        story: Story
+        tbl: Table = md_TRANS.tables[ENT_TY_story.tbl_name]
+        tbl_it: Table = md_TRANS.tables[ENT_TY_story_it.tbl_name]
+        stmnt = select(tbl).where(tbl.columns['id'] == story_id)
+        rs = _con.execute(stmnt)
+        row = rs.first()
+        if not row:
+            return G3Result(4)
+        story: Story = from_row_story(row)
+        # now the items
+        stmt = select(tbl_it).where(tbl_it.columns[ELE_TY_story_id.col_name] == story_id). \
+            order_by(asc(tbl_it.columns['rowno']))
+        rs = _con.execute(stmt)
+        rows = rs.fetchall()
+        for it_row in rows:
+            repl_dct: dict[str, Any] = {ELE_TY_story_id.col_name: story,
+                                        ELE_TY_txt_seq_id.col_name: sel_txt_seq(
+                                            it_row[ELE_TY_txt_seq_id.col_name]).result,
+                                        ELE_TY_txtlc_mp_id.col_name: sel_txtlc_mp(
+                                            it_row[ELE_TY_txtlc_mp_id.col_name]).result}
+            repl_dct = orm(_con, tbl_it, it_row, repl_dct)
+            story_it: StoryIt = from_row_story_it(it_row, repl_dct)
+            story.it_li.append(story_it)
+        return G3Result(0, story)
+
+    if con:
+        return wrapped(con)
+    else:
+        with eng_TRANS.begin() as con:
+            return wrapped(con)
+
+
+def sel_story_it(story_it_id: int, con: Connection = None) -> G3Result[StoryIt]:
+    if not isinstance(story_it_id, int):
+        # noinspection PyUnresolvedReferences
+        story_it_id = story_it_id.id
+
+    def wrapped(_con: Connection) -> G3Result[StoryIt]:
+        story_it: StoryIt = sel_ent_ty(EntId(ENT_TY_story_it, story_it_id), _con).result
+        story: Story = sel_story(story_it.story.id, _con).result
+        story_it = story.it_by_id(story_it_id)
+        return G3Result(0, story_it)
+
+    if con:
+        return wrapped(con)
+    else:
+        with eng_TRANS.begin() as con:
+            return wrapped(con)
+
+
+def fin_story_of(user_id: int, bkey: str) -> Story:
+    tbl: Table = md_TRANS.tables[ENT_TY_story.tbl_name]
+    stmnt = select(tbl).where(tbl.c.user_id == user_id, tbl.c.bkey == bkey)
+    cr: CursorResult = eng_TRANS.execute(stmnt)
+    story: Story = from_row_story(cr.first())
+    return story
+
+
+def fin_story(chat_id: int, bkey: str) -> Story:
+    tbl: Table = md_TRANS.tables[ENT_TY_story.tbl_name]
+    stmnt = select(tbl).where(tbl.c.chat_id == chat_id, tbl.c.bkey == bkey)
+    cr: CursorResult = eng_TRANS.execute(stmnt)
+    return from_row_story(cr.fetchone())
